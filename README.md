@@ -212,6 +212,8 @@ puntare a un tuo duplicato), cartella dei dati.
 
 ## Limiti noti
 
+Cosa resta da verificare, e come, è in [docs/LAVORO-APERTO.md](docs/LAVORO-APERTO.md).
+
 - **Gli Space di Hugging Face non sono stati chiamati davvero**: l'ambiente di sviluppo blocca
   huggingface.co. Gli adapter seguono gli `app.py` pubblicati dagli autori e sono testati con un
   client simulato; se uno Space cambia API, la correzione sta in un solo file di
