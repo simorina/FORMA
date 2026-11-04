@@ -28,6 +28,8 @@ const paths: Record<string, string> = {
   sparkle: '<path d="M8 2.5v3M8 10.5v3M2.5 8h3M10.5 8h3"/>',
   overhang: '<path d="M2.75 13.25h10.5"/><path d="M6.25 13.25V8.25"/><path d="M2.5 8.25h11L11.25 5h-6.5z"/>',
   section: '<path d="M8 2l5.25 3v6L8 14 2.75 11V5z"/><path d="M2.75 8.25L8 11.25l5.25-3"/>',
+  rename: '<path d="M2.75 13.25h10.5"/><path d="M9.6 2.9l2 2-5.9 5.9-2.6.6.6-2.6z"/>',
+  wire: '<path d="M8 2.75l5.25 9.75H2.75z"/><path d="M5.4 7.6h5.2L8 12.5z"/>',
 };
 
 export function icon(name: keyof typeof paths | string, size = 16, label?: string): SVGSVGElement {

@@ -1,9 +1,10 @@
 /**
  * Overlays inside the viewport: the honest first run, the preview image to approve, the
  * generation stages with the intermediate image and Retry, the view tools (fit, auto-rotate,
- * overhang map, section), the sculpt hint, and fatal states.
+ * overhang map, section, wireframe) and quick views, the sculpt hint, and fatal states.
  */
 import type { App, AppState } from '../app';
+import type { View } from '../viewer/viewer';
 import type { Stage } from '../lib/api';
 import { h, render } from '../lib/dom';
 import { mm, num } from '../lib/format';
@@ -27,7 +28,21 @@ export function mountStage(root: HTMLElement, app: App): void {
     class: 'icon-btn tool-btn', type: 'button', 'aria-label': 'Vista in sezione (C)', title: 'Sezione · C',
     onclick: () => app.setSection(app.state.section === null ? 0.5 : null),
   }, icon('section'));
-  const tools = h('div', { class: 'view-tools' }, fitBtn, rotateBtn, overBtn, sectionBtn);
+  const wireBtn = h('button', { class: 'icon-btn tool-btn', type: 'button', 'aria-label': 'Mostra i triangoli (W)', title: 'Triangoli · W', onclick: () => app.toggleWireframe() }, icon('wire'));
+  const tools = h('div', { class: 'view-tools' }, fitBtn, rotateBtn, overBtn, sectionBtn, wireBtn);
+  const VIEWS: { key: View; label: string; name: string; keyHint: string }[] = [
+    { key: 'front', label: 'Fronte', name: 'Vista frontale', keyHint: '1' },
+    { key: 'side', label: 'Lato', name: 'Vista laterale', keyHint: '2' },
+    { key: 'top', label: 'Alto', name: 'Vista dall’alto', keyHint: '3' },
+    { key: 'iso', label: '3/4', name: 'Vista di tre quarti', keyHint: '4' },
+  ];
+  const viewBtns = VIEWS.map((v) => h('button', {
+    class: 'preset', type: 'button', 'aria-pressed': 'false', 'data-view': v.key,
+    'aria-label': `${v.name} (${v.keyHint})`, title: `${v.name} · ${v.keyHint}`,
+    onclick: () => app.viewer?.setView(v.key),
+  }, v.label));
+  const presets = h('div', { class: 'view-presets', role: 'group', 'aria-label': 'Viste rapide' }, viewBtns);
+  const dock = h('div', { class: 'view-dock' }, tools, presets);
 
   // bottom-left: the overhang legend and the section slider
   const legend = h('p', { class: 'chip legend' });
@@ -44,14 +59,15 @@ export function mountStage(root: HTMLElement, app: App): void {
   const draftTitle = h('h2', { class: 'stage-title' });
   const draftText = h('p', { class: 'draft-text' });
   const draftMeta = h('p', { class: 'meta' });
+  const draftEn = h('p', { class: 'meta draft-en' });
   const approve = h('button', { class: 'btn btn-primary', type: 'button', onclick: () => app.approveDraft() }, 'Crea il modello 3D');
   const another = h('button', { class: 'btn btn-secondary', type: 'button', onclick: () => app.preview() }, 'Un’altra immagine');
   const dismiss = h('button', { class: 'btn btn-ghost', type: 'button', onclick: () => app.cancelDraft() }, 'Annulla');
   const draftCard = h('div', { class: 'draft', role: 'dialog', 'aria-label': 'Anteprima dell’immagine' },
     h('div', { class: 'draft-media' }, draftImg, draftWait),
-    h('div', { class: 'draft-body' }, draftTitle, draftText, draftMeta, h('div', { class: 'draft-actions' }, approve, another, dismiss)));
+    h('div', { class: 'draft-body' }, draftTitle, draftText, draftMeta, draftEn, h('div', { class: 'draft-actions' }, approve, another, dismiss)));
 
-  root.append(empty, progress, draftCard, fatal, hint, tools, corner);
+  root.append(empty, progress, draftCard, fatal, hint, dock, corner);
 
   const card = {
     figure: h('figure', { class: 'progress-image' }),
@@ -77,9 +93,12 @@ export function mountStage(root: HTMLElement, app: App): void {
     rotateBtn.setAttribute('aria-pressed', String(s.autoRotate));
     overBtn.setAttribute('aria-pressed', String(s.overhang));
     sectionBtn.setAttribute('aria-pressed', String(s.section !== null));
-    overBtn.disabled = sectionBtn.disabled = !s.current;
+    wireBtn.setAttribute('aria-pressed', String(s.wireframe));
+    overBtn.disabled = sectionBtn.disabled = wireBtn.disabled = !s.current;
     hint.hidden = !s.edit;
-    tools.hidden = !!s.viewerError;
+    dock.hidden = !!s.viewerError;
+    presets.hidden = !s.current;
+    for (const b of viewBtns) b.setAttribute('aria-pressed', String(b.dataset.view === s.view));
 
     // fatal: the backend is down, or WebGL is missing
     const fatalText = s.offline ?? s.viewerError;
@@ -102,6 +121,10 @@ export function mountStage(root: HTMLElement, app: App): void {
         ? 'Prima un’immagine, veloce; il modello 3D, che usa la GPU, parte solo quando la approvi.'
         : 'Il modello 3D seguirà questa immagine. Se non è l’oggetto che volevi, chiedine un’altra: costa poco.';
       draftMeta.textContent = s.draft && !s.drafting ? `“${s.draft.prompt}”` : '';
+      // the image model reads English: show what it was really asked
+      const en = !s.drafting && s.draft?.prompt_en;
+      draftEn.hidden = !en;
+      draftEn.textContent = en ? `In inglese per il modello d’immagine: “${en}”` : '';
       approve.disabled = s.drafting || !s.draft;
       another.disabled = s.drafting;
     }

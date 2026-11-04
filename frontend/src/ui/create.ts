@@ -4,7 +4,6 @@ import { MESH_EXTENSIONS, type ModelInfo, type ProviderInfo, type Quality } from
 import { h, render } from '../lib/dom';
 import { ago, dims, grams, title } from '../lib/format';
 import { icon } from '../lib/icons';
-import { toast } from './toast';
 
 /** Italian examples that read well for the AI models and map to the offline shapes too. */
 export const EXAMPLES = [
@@ -22,7 +21,6 @@ const QUALITIES: { key: Quality; label: string }[] = [
   { key: 'standard', label: 'Standard' },
   { key: 'high', label: 'Alta' },
 ];
-const MAX_UPLOAD = 40 * 1024 * 1024;
 
 export function mountLeftPanel(root: HTMLElement, app: App): { focusPrompt(): void } {
   // -- tabs ------------------------------------------------------------------------------
@@ -72,23 +70,12 @@ export function mountLeftPanel(root: HTMLElement, app: App): { focusPrompt(): vo
   const accept = ['image/png', 'image/jpeg', 'image/webp', ...MESH_EXTENSIONS.map((e) => `.${e}`)].join(',');
   const file = h('input', { type: 'file', accept, class: 'visually-hidden', tabindex: '-1', 'aria-hidden': 'true' }) as HTMLInputElement;
   const take = (f: File | undefined | null) => {
-    if (!f) return;
-    if (f.size > MAX_UPLOAD) {
-      toast('Il file supera 40 MB.', { tone: 'negative' });
-      return;
-    }
-    const ext = f.name.split('.').pop()?.toLowerCase() ?? '';
-    if (MESH_EXTENSIONS.includes(ext)) {
-      void app.uploadMesh(f); // a mesh: repaired and prepared right away
-      return;
-    }
-    if (!/^image\/(png|jpeg|webp)$/.test(f.type)) {
-      toast('Usa una foto PNG, JPG o WEBP, o una mesh STL, OBJ, 3MF, GLB o PLY.', { tone: 'negative' });
-      return;
-    }
-    app.setImage(f);
+    if (f) app.takeFile(f, { quiet: true });
   };
-  file.addEventListener('change', () => take(file.files?.[0]));
+  file.addEventListener('change', () => {
+    take(file.files?.[0]);
+    file.value = ''; // the same file again must fire change again
+  });
   const drop = h(
     'div',
     { class: 'drop', role: 'button', tabindex: 0, 'aria-describedby': 'photo-limits', 'aria-label': 'Scegli una foto o una mesh' },
@@ -102,16 +89,7 @@ export function mountLeftPanel(root: HTMLElement, app: App): { focusPrompt(): vo
       file.click();
     }
   });
-  drop.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    drop.classList.add('is-over');
-  });
-  drop.addEventListener('dragleave', () => drop.classList.remove('is-over'));
-  drop.addEventListener('drop', (e) => {
-    e.preventDefault();
-    drop.classList.remove('is-over');
-    take(e.dataTransfer?.files?.[0]);
-  });
+  // dropping a file here, or anywhere in the window, goes through the overlay in main.ts
   const photo = h('div', { class: 'photo' });
   const photoLimits = h('p', { id: 'photo-limits', class: 'meta' },
     'Foto PNG, JPG o WEBP: un oggetto solo, su sfondo semplice. Mesh STL, OBJ, 3MF, GLB o PLY: la riparo e la preparo per la stampa. Fino a 40 MB.');
@@ -179,7 +157,7 @@ export function mountLeftPanel(root: HTMLElement, app: App): { focusPrompt(): vo
     );
 
   const historyRow = (m: AppState['history'][number], s: AppState) => {
-    const name = title(m.prompt, m.kind);
+    const name = title(m.title || m.prompt, m.kind);
     let armed = false;
     const del = h('button', { class: 'icon-btn history-delete', type: 'button', 'aria-label': `Elimina ${name}`, title: 'Elimina' }, icon('trash'));
     del.addEventListener('click', () => {

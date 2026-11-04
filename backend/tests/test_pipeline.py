@@ -299,6 +299,9 @@ def test_thin_parts_are_found_and_thick_ones_are_not():
     assert thin_parts(trimesh.creation.box((60, 1.6, 30)))[0] == 0.0  # 1.6 mm prints fine
     report = printability_report(finned)
     assert report["thin_pct"] > 10 and any("Parti sottili" in w for w in report["warnings"])
+    # numbers in the messages read as the UI shows them: decimal comma
+    thin = next(w for w in report["warnings"] if "Parti sottili" in w)
+    assert "0,8 mm" in thin and "0.8" not in thin
 
 
 def test_upright_leaves_round_and_steep_shapes_alone():
@@ -310,3 +313,10 @@ def test_upright_leaves_round_and_steep_shapes_alone():
     assert tilt == 0
     keep = process_mesh(box, PrintSettings(orientation="keep"))
     assert not any("livellata" in step for step in keep.report["repairs"])
+
+
+def test_it_num_uses_the_decimal_comma():
+    from app.pipeline.fmt import it_num
+
+    assert it_num(0.8) == "0,8" and it_num(2.0) == "2" and it_num(1.25, 1) == "1,2"
+    assert it_num(12.0, 0) == "12"

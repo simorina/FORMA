@@ -31,11 +31,24 @@ STAGES = [
 STAGE_WEIGHTS = {"image": 0.25, "shape": 0.5, "repair": 0.2, "ready": 0.05}
 
 
+def _settings_now(raw: Any) -> Any:
+    """Stored settings with today's defaults for the fields added since (e.g. flat_bottom_mm)."""
+    if not isinstance(raw, dict):
+        return raw
+    try:
+        return PrintSettings.from_dict(raw).to_dict()
+    except ValueError:
+        return raw
+
+
 def public_model(meta: dict[str, Any]) -> dict[str, Any]:
     mid = meta["id"]
     base = f"/api/models/{mid}"
+    out = {k: v for k, v in meta.items() if not k.startswith("_")}
+    if "settings" in out:
+        out["settings"] = _settings_now(out["settings"])
     return {
-        **{k: v for k, v in meta.items() if not k.startswith("_")},
+        **out,
         "urls": {
             "mesh": f"{base}/mesh.glb?v={int(meta.get('updated_at', 0))}",
             "image": f"{base}/image.png" if meta.get("has_image") else None,

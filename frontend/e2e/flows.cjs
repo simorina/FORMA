@@ -253,6 +253,128 @@ const step = async (name, fn) => {
     assert.ok(res.n > 1000);
   });
 
+  await step('rename from the top bar: Enter saves and names the files, Esc cancels', async () => {
+    await page.click('.object-name-btn');
+    await page.waitForSelector('.object-name-input:not([hidden])');
+    await page.fill('.object-name-input', 'Pezzo di prova');
+    await page.keyboard.press('Enter');
+    await page.waitForFunction(() => document.querySelector('.object-name-text')?.textContent === 'Pezzo di prova');
+    const res = await page.evaluate(async () => {
+      const { models } = await (await fetch('/api/models')).json();
+      const r = await fetch(models[0].urls.export.stl);
+      return { title: models[0].title, cd: r.headers.get('content-disposition') };
+    });
+    assert.equal(res.title, 'Pezzo di prova');
+    assert.match(res.cd, /filename="pezzo-di-prova-\d+mm\.stl"/);
+    assert.match(await text('.file-name'), /pezzo-di-prova-\d+mm\.3mf/);
+    await page.click('.object-name-btn');
+    await page.fill('.object-name-input', 'Nome da scartare');
+    await page.keyboard.press('Escape');
+    assert.equal(await page.isVisible('.object-name-input'), false);
+    assert.equal(await text('.object-name-text'), 'Pezzo di prova');
+    assert.equal(await page.evaluate(() => document.activeElement?.className), 'object-name-btn');
+  });
+
+  await step('quick views (1-4, buttons) and wireframe (W) change the view', async () => {
+    await blur();
+    const shot = () => page.locator('.viewport-canvas').screenshot();
+    const pressed = () => page.evaluate(() => Array.from(document.querySelectorAll('.preset[aria-pressed="true"]')).map((b) => b.dataset.view));
+    await page.keyboard.press('1');
+    await sleep(900);
+    assert.deepEqual(await pressed(), ['front']);
+    const front = await shot();
+    await page.keyboard.press('3');
+    await sleep(900);
+    assert.deepEqual(await pressed(), ['top']);
+    const top = await shot();
+    assert.ok(!front.equals(top), 'the top view looks different from the front view');
+    await page.click('.preset[data-view="iso"]');
+    await sleep(900);
+    assert.deepEqual(await pressed(), ['iso']);
+    await page.keyboard.press('w');
+    await sleep(200);
+    assert.equal(await page.getAttribute('.view-tools .icon-btn:nth-child(5)', 'aria-pressed'), 'true');
+    const wired = await shot();
+    await page.keyboard.press('w');
+    await sleep(200);
+    assert.equal(await page.getAttribute('.view-tools .icon-btn:nth-child(5)', 'aria-pressed'), 'false');
+    assert.ok(!wired.equals(await shot()), 'the wireframe draws the triangles');
+    // orbiting by hand leaves the quick views
+    const box = await page.locator('.viewport-canvas').boundingBox();
+    await page.mouse.move(box.x + 60, box.y + box.height - 60);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 160, box.y + box.height - 80, { steps: 6 });
+    await page.mouse.up();
+    assert.deepEqual(await pressed(), []);
+  });
+
+  await step('flat bottom: cut, applied and reported, with the new report rows', async () => {
+    await page.click('.switch-row:has-text("Base piana")');
+    await page.waitForSelector('.sub-row:has-text("Taglio dal fondo")');
+    assert.equal(await page.inputValue('.sub-row:has-text("Taglio dal fondo") input'), '2');
+    await page.click('.apply-row .btn');
+    await page.waitForFunction(() => /Applicate/.test(document.querySelector('.apply-row .meta')?.textContent || ''), null, { timeout: 30000 });
+    const m = await page.evaluate(async () => (await (await fetch('/api/models')).json()).models[0]);
+    assert.equal(m.settings.flat_bottom_mm, 2);
+    assert.ok(m.report.repairs.some((x) => /fondo tagliato in piano|base piana saltata/.test(x)), m.report.repairs.join(' | '));
+    const kv = await text('.kv');
+    assert.match(kv, /Appoggio sul piatto/);
+    assert.match(kv, /Parti sotto 0,8 mm/);
+    await page.click('.switch-row:has-text("Base piana")'); // off again for the next models
+    assert.equal(await page.isVisible('.sub-row:has-text("Taglio dal fondo")'), false);
+  });
+
+  await step('a photo pasted anywhere becomes the input; a mesh dropped anywhere is repaired', async () => {
+    await blur();
+    await page.evaluate(async () => {
+      const { models } = await (await fetch('/api/models')).json();
+      const blob = await (await fetch(models[0].urls.thumb)).blob();
+      const dt = new DataTransfer();
+      dt.items.add(new File([blob], 'appunti.png', { type: 'image/png' }));
+      document.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true }));
+    });
+    await page.waitForSelector('.photo-chip');
+    assert.match(await text('.toasts'), /Foto pronta/);
+    await page.click('.photo-chip .icon-btn');
+    await arm();
+    await page.evaluate(async () => {
+      const { models } = await (await fetch('/api/models')).json();
+      const blob = await (await fetch(models[0].urls.export.stl)).blob();
+      const dt = new DataTransfer();
+      dt.items.add(new File([blob], 'trascinato.stl', { type: 'model/stl' }));
+      window.dispatchEvent(new DragEvent('dragenter', { dataTransfer: dt, bubbles: true }));
+    });
+    assert.equal(await page.isVisible('.drop-overlay'), true);
+    await page.evaluate(async () => {
+      const { models } = await (await fetch('/api/models')).json();
+      const blob = await (await fetch(models[0].urls.export.stl)).blob();
+      const dt = new DataTransfer();
+      dt.items.add(new File([blob], 'trascinato.stl', { type: 'model/stl' }));
+      document.querySelector('.drop-overlay').dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true }));
+    });
+    assert.equal(await page.isVisible('.drop-overlay'), false);
+    await page.waitForFunction((n) => document.querySelectorAll('.history-row').length > n, baseline, { timeout: 30000 });
+    const models = await page.evaluate(async () => (await (await fetch('/api/models')).json()).models);
+    assert.equal(models[0].kind, 'upload');
+    assert.match(models[0].prompt, /trascinato/);
+  });
+
+  await step('the preview card shows the English prompt sent to the image model', async () => {
+    await page.click('.review-row'); // review on again
+    const thumb = await page.evaluate(async () => (await (await fetch('/api/models')).json()).models[0].urls.thumb);
+    await page.route('**/api/image', (r) => r.fulfill({ contentType: 'application/json', body: JSON.stringify({
+      draft_id: 'd', url: thumb, prompt: 'Gatto seduto', prompt_en: 'A sitting cat', seed: 1, provider: 'procedural' }) }));
+    await page.fill('#prompt', 'Gatto seduto');
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('.draft:not([hidden]) .draft-en:not([hidden])', { timeout: 8000 });
+    assert.match(await text('.draft-en'), /A sitting cat/);
+    await page.unroute('**/api/image');
+    await blur();
+    await page.keyboard.press('Escape');
+    assert.equal(await page.isVisible('.draft'), false);
+    await page.click('.review-row'); // and off
+  });
+
   await step('photo upload generates from an image', async () => {
     const thumb = await page.evaluate(async () => {
       const { models } = await (await fetch('/api/models')).json();

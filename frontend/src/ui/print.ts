@@ -103,8 +103,8 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
     const row = h('label', { class: 'switch-row' }, h('span', { class: 'switch-text' }, h('span', null, label), h('span', { class: 'meta' }, hintText)), input);
     return { row, input };
   };
-  const stepper = (label: string, key: 'wall_mm' | 'base_thickness_mm', min: number, max: number) => {
-    const input = h('input', { type: 'number', class: 'num-input num', min, max, step: 0.2, inputmode: 'decimal', 'aria-label': `${label} in millimetri` }) as HTMLInputElement;
+  const stepper = (label: string, key: 'wall_mm' | 'base_thickness_mm' | 'flat_bottom_mm', min: number, max: number, step = 0.2) => {
+    const input = h('input', { type: 'number', class: 'num-input num', min, max, step, inputmode: 'decimal', 'aria-label': `${label} in millimetri` }) as HTMLInputElement;
     input.addEventListener('change', () => {
       const v = Math.max(min, Math.min(max, Number(input.value.replace(',', '.')) || min));
       app.setSetting(key, Math.round(v * 10) / 10);
@@ -112,6 +112,17 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
     const row = h('div', { class: 'sub-row' }, h('span', null, label), h('span', { class: 'with-unit' }, input, h('span', { class: 'meta' }, 'mm')));
     return { row, input };
   };
+  // flat bottom: a switch over flat_bottom_mm (0 = off), remembering the last depth used
+  const flatInput = h('input', { type: 'checkbox', class: 'switch', role: 'switch', 'aria-label': 'Base piana' }) as HTMLInputElement;
+  let lastFlat = 2;
+  flatInput.addEventListener('change', () => app.setSetting('flat_bottom_mm', flatInput.checked ? lastFlat : 0));
+  const flat = {
+    row: h('label', { class: 'switch-row' },
+      h('span', { class: 'switch-text' }, h('span', null, 'Base piana'), h('span', { class: 'meta' }, 'Taglia il fondo in piano: più presa sul piatto')),
+      flatInput),
+    input: flatInput,
+  };
+  const flatDepth = stepper('Taglio dal fondo', 'flat_bottom_mm', 0.5, 30, 0.5);
   const hollow = toggle('Svuota l’interno', 'Meno filamento, pareti piene', 'hollow');
   const wall = stepper('Spessore pareti', 'wall_mm', 0.8, 20);
   const base = toggle('Base d’appoggio', 'Allarga l’impronta sul piatto', 'base_plate');
@@ -150,7 +161,7 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
       sizeRange,
       h('div', { class: 'fit' }, bedPlan, h('div', { class: 'fit-text' }, fitLine, fitDims, fitAction)),
       h('div', { class: 'field' }, h('span', { class: 'label' }, 'Orientamento'), orientSeg),
-      hollow.row, wall.row, base.row, baseT.row,
+      flat.row, flatDepth.row, hollow.row, wall.row, base.row, baseT.row,
       h('div', { class: 'apply-row' }, applyNote, applyBtn)),
   );
   const editView = h('div', { class: 'view edit-view' });
@@ -218,6 +229,11 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
       class: 'seg', type: 'button', role: 'radio', title: o.title, 'aria-checked': String(s.settings.orientation === o.key),
       onclick: () => app.setSetting('orientation', o.key),
     }, o.label)));
+    const cut = s.settings.flat_bottom_mm ?? 0;
+    if (cut > 0) lastFlat = cut;
+    flat.input.checked = cut > 0;
+    flatDepth.row.hidden = cut <= 0;
+    if (document.activeElement !== flatDepth.input) flatDepth.input.value = String(cut > 0 ? cut : lastFlat);
     hollow.input.checked = s.settings.hollow;
     wall.row.hidden = !s.settings.hollow;
     if (document.activeElement !== wall.input) wall.input.value = String(s.settings.wall_mm);
@@ -265,6 +281,10 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
       ['Mesh', r.watertight ? 'Chiusa e valida' : 'Aperta'],
       ['Pezzi', num(r.components)],
       ['Sbalzi oltre 45°', `${num(r.overhang_pct, 0)}%`],
+      ...(r.bed_contact_cm2 !== undefined ? [['Appoggio sul piatto', `${num(r.bed_contact_cm2, r.bed_contact_cm2 < 10 ? 1 : 0)} cm²`] as [string, string]] : []),
+      ...(r.thin_pct !== undefined ? [['Parti sotto 0,8 mm', r.thin_pct > 0.1 && r.thin_mm
+        ? `${num(r.thin_pct, r.thin_pct < 10 ? 1 : 0)}% · ≈ ${num(r.thin_mm, 1)} mm`
+        : 'Nessuna'] as [string, string]] : []),
       ['Copie per piatto', est.copies > 0 ? num(est.copies) : '—'],
       ['Triangoli', num(r.triangles)],
     ];

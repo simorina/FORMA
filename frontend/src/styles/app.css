@@ -77,8 +77,25 @@ kbd {
 .vrule { width: 1px; height: 20px; background: var(--line); flex: none; }
 .object { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1; }
 .object-name {
+  display: flex; min-width: 0;
   font-size: 16px; line-height: 20px; font-weight: 600; letter-spacing: -0.01em;
-  min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.object-name-btn {
+  display: flex; align-items: center; gap: 6px; min-width: 0; height: 30px; margin: 0 -8px; padding: 0 8px;
+  border: 0; border-radius: 10px; background: transparent; font: inherit; letter-spacing: inherit; cursor: text;
+  transition: background-color 0.15s ease;
+}
+.object-name-text { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.object-name-btn .icon { color: var(--faint); opacity: 0; transition: opacity 0.15s ease; }
+.object-name-btn:hover:not(:disabled) { background: var(--raised); }
+.object-name-btn:hover:not(:disabled) .icon, .object-name-btn:focus-visible .icon { opacity: 1; }
+.object-name-btn:disabled { cursor: default; }
+.object-name-btn:disabled .icon { display: none; }
+@media (hover: none) { .object-name-btn .icon { display: none; } }
+.object-name-input {
+  flex: 1 1 320px; width: 320px; min-width: 0; height: 30px; margin: 0 -8px; padding: 0 7px;
+  background: var(--ground); border: 1px solid #fff; border-radius: 10px; outline: none;
+  font: inherit; letter-spacing: inherit;
 }
 .topbar-actions { display: flex; align-items: center; gap: 4px; flex: none; }
 .topbar-actions .vrule { margin: 0 8px; }
@@ -238,7 +255,7 @@ kbd {
   border: 1px dashed #3a3a3a; border-radius: var(--radius-well); color: var(--muted); cursor: pointer;
   transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease;
 }
-.drop:hover, .drop.is-over { border-color: #777; background: #161616; color: #fff; }
+.drop:hover { border-color: #777; background: #161616; color: #fff; }
 .link { color: #fff; text-decoration: underline; text-decoration-color: #5a5a5a; text-underline-offset: 3px; }
 .photo-chip { display: flex; align-items: center; gap: 12px; padding: 8px; background: var(--ground); border-radius: var(--radius-well); }
 .photo-chip img { width: 56px; height: 56px; object-fit: cover; border-radius: 8px; flex: none; }
@@ -365,7 +382,7 @@ kbd {
 .viewport-canvas { display: block; width: 100%; height: 100%; touch-action: none; outline: none; transition: opacity 0.3s ease; }
 /* CSS2DRenderer gives each label a z-index: keep them in their own stacking context, under the overlays */
 .viewport-labels { pointer-events: none; z-index: 0; transition: opacity 0.3s ease; }
-.stage-empty, .stage-fatal, .progress, .view-tools, .sculpt-hint { z-index: 1; }
+.stage-empty, .stage-fatal, .progress, .view-dock, .sculpt-hint { z-index: 1; }
 .is-generating .viewport-canvas { opacity: 0.32; }
 .is-generating .viewport-labels { opacity: 0; }
 .is-sculpting { cursor: crosshair; }
@@ -386,7 +403,16 @@ kbd {
 }
 .stage-fatal .stage-title { margin: 0; color: #fff; }
 
-.view-tools { position: absolute; top: 14px; right: 14px; display: flex; gap: 2px; padding: 3px; background: var(--raised); border-radius: 999px; }
+.view-dock { position: absolute; top: 14px; right: 14px; display: grid; justify-items: end; gap: 8px; }
+.view-tools, .view-presets { display: flex; gap: 2px; padding: 3px; background: var(--raised); border-radius: 999px; }
+.preset {
+  height: 26px; padding: 0 10px; border: 0; border-radius: 999px; background: transparent;
+  color: var(--muted); font-size: 12px; font-weight: 500; white-space: nowrap; cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.preset:hover { color: #fff; }
+.preset[aria-pressed='true'] { background: var(--raised-2); color: #fff; }
+.draft-en { margin-top: -6px; }
 .sculpt-hint { position: absolute; top: 14px; left: 14px; max-width: calc(100% - 120px); padding: 6px 12px; background: var(--raised); border-radius: 999px; color: var(--muted); font-size: 12px; line-height: 16px; }
 
 .progress {
@@ -445,6 +471,19 @@ kbd {
 .draft-text { color: var(--muted); }
 .draft-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
 .review-row { margin-top: 6px; padding-bottom: 0; }
+
+/* -- drop anywhere ------------------------------------------------------------------------------ */
+.drop-overlay {
+  position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 16px;
+  background: rgb(0 0 0 / 0.66);
+}
+.drop-overlay-card {
+  display: grid; justify-items: center; gap: 8px; width: min(420px, 100%); padding: 32px 24px;
+  border: 1px dashed #777; border-radius: var(--radius-panel); background: var(--surface);
+  text-align: center; pointer-events: none;
+}
+.drop-overlay-card .icon { color: #fff; }
+.drop-overlay-title { font-size: 18px; line-height: 24px; font-weight: 600; }
 
 /* -- overhang legend and section slider -------------------------------------------------------- */
 .stage-corner { position: absolute; left: 14px; bottom: 14px; z-index: 1; display: grid; gap: 8px; justify-items: start; max-width: calc(100% - 28px); }
@@ -529,6 +568,8 @@ kbd {
   .history-delete { width: 40px; height: 40px; }
   .seg { height: 36px; }
   .toasts { width: calc(100% - 32px); top: auto; bottom: 14px; }
+  .preset { height: 34px; padding: 0 12px; }
+  .sculpt-hint { top: auto; bottom: 14px; max-width: calc(100% - 28px); }
   body.has-sheet .toasts { bottom: auto; top: 14px; }
 }
 

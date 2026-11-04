@@ -1,7 +1,7 @@
 import '@fontsource-variable/inter';
 import './styles/app.css';
 import { App, type AppState } from './app';
-import { h } from './lib/dom';
+import { h, typingTarget } from './lib/dom';
 import { filamentByKey } from './lib/filaments';
 import { icon } from './lib/icons';
 import { fitOnBed } from './lib/printers';
@@ -44,6 +44,7 @@ if (webglAvailable()) {
     const viewer = new Viewer(host, {
       onSculpt: (sculpt) => app.store.set({ sculpt }),
       onShape: (shape) => app.store.set({ shape }),
+      onView: (view) => app.store.set({ view }),
     });
     app.viewer = viewer;
     viewer.setPrinter(app.printer());
@@ -63,6 +64,48 @@ const leftApi = mountLeftPanel(left, app);
 mountRightPanel(right, app);
 mountStage(viewport, app);
 mountShortcuts(document.body, app, leftApi.focusPrompt);
+
+// -- a photo or a mesh dropped anywhere in the window, or pasted ------------------------------
+const take = (f: File) => {
+  const kind = app.takeFile(f);
+  if (kind === 'image' && window.innerWidth < 1024) app.store.set({ sheet: 'create' });
+};
+const dropOverlay = h('div', { class: 'drop-overlay' },
+  h('div', { class: 'drop-overlay-card' },
+    icon('upload', 20),
+    h('p', { class: 'drop-overlay-title' }, 'Rilascia qui'),
+    h('p', { class: 'meta' }, 'Una foto diventa un modello 3D, una mesh viene riparata e preparata')));
+dropOverlay.hidden = true;
+document.body.append(dropOverlay);
+const hasFiles = (e: DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes('Files');
+window.addEventListener('dragenter', (e) => {
+  if (hasFiles(e)) dropOverlay.hidden = false;
+});
+// the browser would open a file dropped outside the overlay: never
+window.addEventListener('dragover', (e) => { if (hasFiles(e)) e.preventDefault(); });
+window.addEventListener('drop', (e) => { if (hasFiles(e)) e.preventDefault(); });
+dropOverlay.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+});
+dropOverlay.addEventListener('dragleave', (e) => { if (e.target === dropOverlay) dropOverlay.hidden = true; });
+dropOverlay.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dropOverlay.hidden = true;
+  const f = e.dataTransfer?.files?.[0];
+  if (f) take(f);
+});
+// a drag cancelled outside the window leaves no dragleave behind: the next pointer move clears it
+window.addEventListener('pointermove', () => { if (!dropOverlay.hidden) dropOverlay.hidden = true; });
+
+document.addEventListener('paste', (e) => {
+  const f = e.clipboardData?.files?.[0];
+  if (!f) return;
+  // text copied from a document often carries a picture of itself: in a text field, text wins
+  if (typingTarget(e.target) && e.clipboardData?.types.includes('text/plain')) return;
+  e.preventDefault();
+  take(f);
+});
 
 // -- phone sheets ------------------------------------------------------------------------------
 const printTab = tabbar.querySelector<HTMLElement>('[data-tab="print"]')!;

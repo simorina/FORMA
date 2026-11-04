@@ -3,7 +3,7 @@
  * the viewer is driven from here.
  */
 import {
-  ApiError, MESH_EXTENSIONS, api,
+  ApiError, MAX_UPLOAD, MESH_EXTENSIONS, api,
   type Draft, type Job, type Model, type PrintSettings, type ProvidersResponse, type Quality,
 } from './lib/api';
 import { DEFAULT_FILAMENT, filamentByKey, uiColor } from './lib/filaments';
@@ -12,7 +12,7 @@ import { PRINTERS, fitOnBed, type Printer } from './lib/printers';
 import { createStore, saved, type Store } from './lib/store';
 import { title } from './lib/format';
 import type { SculptState } from './edit/sculpt';
-import type { Viewer } from './viewer/viewer';
+import type { View, Viewer } from './viewer/viewer';
 import { toast } from './ui/toast';
 
 export type Panel = 'create' | 'history';
@@ -50,6 +50,8 @@ export interface AppState {
   draft: Draft | null;
   drafting: boolean;
   overhang: boolean; // paint overhangs in the viewport
+  wireframe: boolean; // show the triangles
+  view: View | null; // the quick view the camera is in (null: orbited freely)
   section: number | null; // cut height as a fraction of the model, or null
   job: Job | null;
   lastRequest: GenerateRequest | null;
@@ -68,10 +70,10 @@ export interface AppState {
 }
 
 /** The print settings the panel exposes (the rest keep the backend defaults). */
-export const EDITABLE = ['target_size_mm', 'orientation', 'hollow', 'wall_mm', 'base_plate', 'base_thickness_mm'] as const;
+export const EDITABLE = ['target_size_mm', 'orientation', 'flat_bottom_mm', 'hollow', 'wall_mm', 'base_plate', 'base_thickness_mm'] as const;
 
 const FALLBACK_SETTINGS: PrintSettings = {
-  target_size_mm: 100, orientation: 'upright', hollow: false, wall_mm: 2, base_plate: false,
+  target_size_mm: 100, orientation: 'upright', flat_bottom_mm: 0, hollow: false, wall_mm: 2, base_plate: false,
   base_thickness_mm: 2, base_margin_mm: 3, decimate: true, target_faces: 150000, remove_debris: true,
   repair_resolution: 192,
 };
@@ -99,6 +101,8 @@ function initial(): AppState {
     draft: null,
     drafting: false,
     overhang: false,
+    wireframe: false,
+    view: 'iso',
     section: null,
     job: null,
     lastRequest: null,
@@ -183,7 +187,7 @@ export class App {
     if (s.draft) return title(s.draft.prompt, 'text');
     if (s.drafting && s.prompt.trim()) return title(s.prompt, 'text');
     if (this.generating(s) && s.job) return title(s.job.prompt, s.job.prompt ? 'text' : 'image');
-    if (s.current) return title(s.current.prompt, s.current.kind);
+    if (s.current) return title(s.current.title || s.current.prompt, s.current.kind);
     return 'Nuovo modello';
   }
 
@@ -400,7 +404,7 @@ export class App {
       this.store.set({ current: null, shape: null });
       this.viewer?.clear();
     }
-    toast(`Eliminato: ${title(model.prompt, model.kind)}`);
+    toast(`Eliminato: ${title(model.title || model.prompt, model.kind)}`);
   }
 
   /** Re-run the print pipeline on the current model with the panel's settings. */
@@ -510,6 +514,59 @@ export class App {
   setReview(on: boolean): void {
     this.store.set({ reviewImage: on });
     saved.set('reviewImage', on);
+  }
+
+  toggleWireframe(): void {
+    const on = !this.state.wireframe;
+    this.store.set({ wireframe: on });
+    this.viewer?.setWireframe(on);
+  }
+
+  /**
+   * A file from the picker, dropped anywhere or pasted: a mesh is repaired and prepared right
+   * away, a photo becomes the input of the next generation. `quiet`: the panel shows it already.
+   */
+  takeFile(f: File, opts: { quiet?: boolean } = {}): 'mesh' | 'image' | null {
+    const ext = f.name.split('.').pop()?.toLowerCase() ?? '';
+    if (f.size > MAX_UPLOAD) {
+      toast('Il file supera 40 MB.', { tone: 'negative' });
+      return null;
+    }
+    if (MESH_EXTENSIONS.includes(ext)) {
+      if (this.working()) {
+        toast('Sto già lavorando a un modello: riprova quando ho finito.');
+        return null;
+      }
+      void this.uploadMesh(f);
+      return 'mesh';
+    }
+    if (!/^image\/(png|jpeg|webp)$/.test(f.type)) {
+      toast('Usa una foto PNG, JPG o WEBP, o una mesh STL, OBJ, 3MF, GLB, PLY o OFF.', { tone: 'negative' });
+      return null;
+    }
+    this.setImage(f);
+    if (!opts.quiet) {
+      this.setPanel('create');
+      toast('Foto pronta: premi Genera per farne un modello 3D.');
+    }
+    return 'image';
+  }
+
+  /** Name the current model (also names its files); empty goes back to the prompt. */
+  async rename(model: Model, name: string): Promise<void> {
+    const clean = name.split(/\s+/).filter(Boolean).join(' ').slice(0, 120);
+    // its prompt (as typed or as shown) is not a title of its own
+    const next = clean === title(model.prompt, model.kind) || clean === (model.prompt ?? '').trim() ? '' : clean;
+    if (next === (model.title ?? '')) return;
+    try {
+      const updated = await api.rename(model.id, next);
+      this.store.set({
+        history: this.state.history.map((m) => (m.id === updated.id ? updated : m)),
+        current: this.state.current?.id === updated.id ? updated : this.state.current,
+      });
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), { tone: 'negative' });
+    }
   }
 
   toggleOverhang(): void {

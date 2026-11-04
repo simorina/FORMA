@@ -399,6 +399,20 @@ def test_rename_model_names_the_files_too(client):
     assert client.patch("/api/models/abcdefabcdef", data={"title": "x"}).status_code == 404
 
 
+def test_models_saved_before_new_settings_get_their_defaults(client, settings):
+    import json
+
+    job = wait_job(client, client.post("/api/generate", data={"prompt": "cubo"}).json()["job_id"])
+    mid = job["result"]["id"]
+    meta_path = settings.data_dir / "models" / mid / "meta.json"
+    meta = json.loads(meta_path.read_text())
+    del meta["settings"]["flat_bottom_mm"]  # as saved by an older Forma
+    meta_path.write_text(json.dumps(meta))
+    model = client.get(f"/api/models/{mid}").json()
+    assert model["settings"]["flat_bottom_mm"] == 0.0
+    assert client.get("/api/models").json()["models"][0]["settings"]["flat_bottom_mm"] == 0.0
+
+
 def test_pixal3d_stage_names_are_italian():
     from app.providers.endpoints.pixal3d import _italian_stage, status_poller
 

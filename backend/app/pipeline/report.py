@@ -9,6 +9,7 @@ import numpy as np
 import trimesh
 from scipy.spatial import cKDTree
 
+from .fmt import it_num
 from .repair import count_bodies
 
 PLA_DENSITY = 1.24  # g/cm³
@@ -97,14 +98,14 @@ def printability_report(mesh: trimesh.Trimesh, extra: dict[str, Any] | None = No
     if thin_frac > 0.001 and thin_mm is not None:
         scale = MIN_WALL_MM / max(thin_mm, 0.05)
         warnings.append(
-            f"Parti sottili (circa {thin_mm:.1f} mm) sul {thin_frac * 100:.1f}% della superficie: "
-            f"sotto {MIN_WALL_MM:g} mm potrebbero non stamparsi. Ingrandisci di circa ×{scale:.1f} "
+            f"Parti sottili (circa {it_num(thin_mm, 1)} mm) sul {it_num(thin_frac * 100, 1)}% della superficie: "
+            f"sotto {it_num(MIN_WALL_MM)} mm potrebbero non stamparsi. Ingrandisci di circa ×{it_num(scale, 1)} "
             "o rinforzale nella modifica."
         )
     contact = bed_contact_cm2(mesh)
     if extents.size and extents[2] > 15 and contact < 1.0:
         warnings.append(
-            f"Appoggia sul piatto solo per {contact:.1f} cm²: potrebbe staccarsi o cadere. "
+            f"Appoggia sul piatto solo per {it_num(contact, 1)} cm²: potrebbe staccarsi o cadere. "
             "Prova la base piana o una base d'appoggio."
         )
     report = {

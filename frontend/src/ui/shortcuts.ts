@@ -16,6 +16,8 @@ export function mountShortcuts(host: HTMLElement, app: App, focusPrompt: () => v
     [[mod, 'Z'], 'Annulla'],
     [[mod, '⇧', 'Z'], 'Ripeti'],
     [['F'], 'Inquadra il modello'],
+    [['1', '2', '3', '4'], 'Vista frontale, laterale, dall’alto, di tre quarti'],
+    [['W'], 'Mostra i triangoli della mesh'],
     [['O'], 'Mostra gli sbalzi da sostenere'],
     [['C'], 'Vista in sezione'],
     [['Spazio'], 'Rotazione automatica'],
@@ -104,6 +106,12 @@ export function mountShortcuts(host: HTMLElement, app: App, focusPrompt: () => v
         break;
       case 'f': case 'F':
         app.viewer?.fit();
+        break;
+      case '1': case '2': case '3': case '4':
+        app.viewer?.setView((['front', 'side', 'top', 'iso'] as const)[Number(k) - 1]);
+        break;
+      case 'w': case 'W':
+        if (s.current) app.toggleWireframe();
         break;
       case 'o': case 'O':
         if (s.current) app.toggleOverhang();

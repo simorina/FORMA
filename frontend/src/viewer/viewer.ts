@@ -1,7 +1,8 @@
 /**
  * The 3D viewport: studio lighting (PMREM room environment, ACES filmic tone mapping,
  * soft shadows), the printer's bed with a subtle reflection, dimension lines, a reveal that
- * builds the model up from the bed like a print, idle auto-rotate and fit-to-view.
+ * builds the model up from the bed like a print, idle auto-rotate, fit-to-view with quick
+ * views (front, side, top, 3/4) and a wireframe overlay that shows the triangles.
  *
  * World units are millimetres, Z up: exactly what the backend's mesh.glb preview contains,
  * so an edited mesh can be written back as STL without any conversion.
@@ -34,14 +35,34 @@ export interface ViewerEvents {
   onShape?(size: [number, number, number]): void;
   /** WebGL could not start */
   onError?(message: string): void;
+  /** the quick view the camera is in, or null once the user orbits away from it */
+  onView?(view: View | null): void;
 }
 
+/** Quick views; "iso" is the 3/4 view the model is framed in when it loads. */
+export type View = 'front' | 'side' | 'top' | 'iso';
+
+/** Camera direction from the target, in degrees: azimuth from -Y towards +X, elevation. */
+const VIEWS: Record<View, { az: number; el: number }> = {
+  front: { az: 0, el: 4 },
+  side: { az: 90, el: 4 },
+  top: { az: 0, el: 89.9 }, // not exactly 90: OrbitControls needs a direction off the pole
+  iso: { az: 32, el: 22 },
+};
+
+/** Camera moves orbit the target (direction slerped, distance lerped): no dip through the model. */
 interface Tween {
-  from: { pos: THREE.Vector3; target: THREE.Vector3 };
-  to: { pos: THREE.Vector3; target: THREE.Vector3 };
+  fromTarget: THREE.Vector3;
+  toTarget: THREE.Vector3;
+  fromDir: THREE.Vector3;
+  turn: THREE.Quaternion;
+  fromDist: number;
+  toDist: number;
   start: number;
   duration: number;
 }
+
+const ONE = new THREE.Quaternion();
 
 export class Viewer {
   readonly sculpt: Sculpt;
@@ -55,6 +76,7 @@ export class Viewer {
   private readonly key: THREE.DirectionalLight;
   private readonly material: THREE.MeshPhysicalMaterial;
   private readonly reflectionMaterial: THREE.MeshPhysicalMaterial;
+  private readonly wireMaterial: THREE.MeshBasicMaterial;
   private readonly clip = new THREE.Plane(new THREE.Vector3(0, 0, -1), 1e6);
   private readonly mirrorClip = new THREE.Plane(new THREE.Vector3(0, 0, 1), 1e6);
   private readonly fade = { value: 30 };
@@ -70,6 +92,10 @@ export class Viewer {
   private section: number | null = null;
   private mesh: THREE.Mesh | null = null;
   private reflection: THREE.Mesh | null = null;
+  private wire: THREE.Mesh | null = null;
+  private wireframe = false;
+  private view: View = 'iso';
+  private holdView = false; // a quick view was picked: no auto-rotate until the user moves
   private dirty = true;
   private raf = 0;
   private reveal: { start: number; height: number } | null = null;
@@ -174,6 +200,16 @@ export class Viewer {
       );
     };
 
+    // The triangles over the surface: the solid is pushed back a little so the lines win.
+    this.wireMaterial = new THREE.MeshBasicMaterial({
+      color: 0x000000,
+      wireframe: true,
+      transparent: true,
+      opacity: 0.32,
+      depthWrite: false,
+      clippingPlanes: [this.clip],
+    });
+
     this.scene.add(this.bed.group, this.dims.group);
     this.camera.up.set(0, 0, 1);
     this.camera.position.set(260, -420, 260);
@@ -185,7 +221,11 @@ export class Viewer {
     this.controls.minDistance = 15;
     this.controls.maxDistance = 3000;
     this.controls.autoRotateSpeed = 0.55;
-    this.controls.addEventListener('start', () => this.touch());
+    this.controls.addEventListener('start', () => {
+      this.holdView = false;
+      this.touch();
+      this.events.onView?.(null);
+    });
     this.controls.addEventListener('change', () => (this.dirty = true));
 
     this.sculpt = new Sculpt({
@@ -221,6 +261,10 @@ export class Viewer {
     // the overhang paint must stand out from the filament: blue on warm colours, red otherwise
     this.overhangU.uOverColor.value.set(this.overhangColor(hex));
     this.overhangU.uCutColor.value.set(hex).multiplyScalar(0.38);
+    // dark lines on light filaments, light lines on dark ones
+    const light = new THREE.Color(hex).getHSL({ h: 0, s: 0, l: 0 }).l > 0.42;
+    this.wireMaterial.color.set(light ? 0x000000 : 0xffffff);
+    this.wireMaterial.opacity = light ? 0.34 : 0.22;
     this.dirty = true;
   }
 
@@ -235,6 +279,25 @@ export class Viewer {
   setOverhang(on: boolean): void {
     this.overhangU.uOverhang.value = on ? 1 : 0;
     this.dirty = true;
+  }
+
+  /** Show the mesh triangles over the surface. */
+  setWireframe(on: boolean): void {
+    this.wireframe = on;
+    if (this.wire) this.wire.visible = on;
+    this.material.polygonOffset = on;
+    this.material.polygonOffsetFactor = on ? 1 : 0;
+    this.material.polygonOffsetUnits = on ? 1 : 0;
+    this.dirty = true;
+  }
+
+  /** Look at the model (or the empty bed) from the front, the side, above or 3/4. */
+  setView(view: View, animate = !reducedMotion()): void {
+    this.view = view;
+    this.holdView = view !== 'iso';
+    this.touch();
+    this.frame(animate);
+    this.events.onView?.(view);
   }
 
   /** Cut the model horizontally at a fraction of its height, to look inside (null: whole). */
@@ -308,8 +371,15 @@ export class Viewer {
     return [s.x, s.y, s.z];
   }
 
-  /** Frame the model (or the empty bed). */
+  /** Frame the model (or the empty bed) in the 3/4 view. */
   fit(animate = true): void {
+    this.view = 'iso';
+    this.holdView = false;
+    this.frame(animate);
+    this.events.onView?.('iso');
+  }
+
+  private frame(animate: boolean): void {
     let center: THREE.Vector3, radius: number;
     if (this.mesh) {
       const box = this.mesh.geometry.boundingBox!;
@@ -323,19 +393,27 @@ export class Viewer {
     const vfov = THREE.MathUtils.degToRad(this.camera.fov);
     const hfov = 2 * Math.atan(Math.tan(vfov / 2) * this.camera.aspect);
     const dist = radius / Math.sin(Math.min(vfov, hfov) / 2);
-    const az = THREE.MathUtils.degToRad(32), el = THREE.MathUtils.degToRad(this.mesh ? 22 : 34);
+    const v = VIEWS[this.view];
+    const az = THREE.MathUtils.degToRad(v.az);
+    const el = THREE.MathUtils.degToRad(this.view === 'iso' && !this.mesh ? 34 : v.el);
     const dir = new THREE.Vector3(Math.cos(el) * Math.sin(az), -Math.cos(el) * Math.cos(az), Math.sin(el));
-    const pos = center.clone().addScaledVector(dir, dist);
     this.placeShadow(center, radius);
     if (!animate) {
       this.tween = null;
-      this.camera.position.copy(pos);
+      this.camera.position.copy(center).addScaledVector(dir, dist);
       this.controls.target.copy(center);
       this.controls.update();
     } else {
+      const offset = this.camera.position.clone().sub(this.controls.target);
+      const fromDist = Math.max(offset.length(), 1e-3);
+      const fromDir = offset.divideScalar(fromDist);
       this.tween = {
-        from: { pos: this.camera.position.clone(), target: this.controls.target.clone() },
-        to: { pos, target: center },
+        fromTarget: this.controls.target.clone(),
+        toTarget: center,
+        fromDir,
+        turn: new THREE.Quaternion().setFromUnitVectors(fromDir, dir),
+        fromDist,
+        toDist: dist,
         start: performance.now(),
         duration: 650,
       };
@@ -372,6 +450,9 @@ export class Viewer {
     this.resize.disconnect();
     this.controls.dispose();
     this.disposeModel();
+    this.material.dispose();
+    this.reflectionMaterial.dispose();
+    this.wireMaterial.dispose();
     this.renderer.dispose();
     this.host.replaceChildren();
   }
@@ -396,7 +477,10 @@ export class Viewer {
     this.reflection = new THREE.Mesh(g, this.reflectionMaterial);
     this.reflection.scale.z = -1; // mirrored in the bed plane (the model rests on Z = 0)
     this.reflection.renderOrder = 0;
-    this.scene.add(this.reflection, this.mesh);
+    this.wire = new THREE.Mesh(g, this.wireMaterial);
+    this.wire.visible = this.wireframe;
+    this.wire.raycast = () => {}; // the sculpt brush and picking only see the solid
+    this.scene.add(this.reflection, this.mesh, this.wire);
     this.sculpt.attach(this.mesh);
     this.sculpt.setEnabled(this.editing);
     const size = this.size()!;
@@ -409,9 +493,10 @@ export class Viewer {
     const g = this.mesh.geometry as THREE.BufferGeometry & { disposeBoundsTree?: () => void };
     this.scene.remove(this.mesh);
     if (this.reflection) this.scene.remove(this.reflection);
+    if (this.wire) this.scene.remove(this.wire);
     g.disposeBoundsTree?.();
     g.dispose();
-    this.mesh = this.reflection = null;
+    this.mesh = this.reflection = this.wire = null;
     this.reveal = null;
     this.section = null;
     this.clip.constant = this.mirrorClip.constant = 1e6;
@@ -474,13 +559,15 @@ export class Viewer {
     const now = performance.now();
     const idle = now - this.lastInteraction > 4000;
     this.controls.autoRotate =
-      this.autoRotate && idle && !!this.mesh && !this.editing && !this.reveal && !this.tween && !reducedMotion();
+      this.autoRotate && idle && !this.holdView && !!this.mesh && !this.editing && !this.reveal && !this.tween && !reducedMotion();
 
     if (this.tween) {
       const t = Math.min(1, (now - this.tween.start) / this.tween.duration);
       const e = easeInOut(t);
-      this.camera.position.lerpVectors(this.tween.from.pos, this.tween.to.pos, e);
-      this.controls.target.lerpVectors(this.tween.from.target, this.tween.to.target, e);
+      const tw = this.tween;
+      const dir = tw.fromDir.clone().applyQuaternion(ONE.clone().slerp(tw.turn, e));
+      this.controls.target.lerpVectors(tw.fromTarget, tw.toTarget, e);
+      this.camera.position.copy(this.controls.target).addScaledVector(dir, THREE.MathUtils.lerp(tw.fromDist, tw.toDist, e));
       if (t >= 1) this.tween = null;
       this.dirty = true;
     }

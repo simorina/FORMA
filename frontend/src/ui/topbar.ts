@@ -1,4 +1,7 @@
-/** 44px top bar: the product, the object's name with its status, actions, the primary download. */
+/**
+ * 44px top bar: the product, the object's name (click to rename it) with its status, actions,
+ * the primary download.
+ */
 import type { App, AppState } from '../app';
 import { h } from '../lib/dom';
 import { icon, mark } from '../lib/icons';
@@ -28,8 +31,45 @@ export function status(app: App, s: AppState): Status | null {
 }
 
 export function mountTopbar(root: HTMLElement, app: App): void {
-  const name = h('h1', { class: 'object-name' });
+  // The name is a button while the model on the bed can be renamed, an input while renaming.
+  const nameText = h('span', { class: 'object-name-text' });
+  const nameHint = h('span', { class: 'visually-hidden' }, ' (rinomina)');
+  const nameBtn = h('button', { class: 'object-name-btn', type: 'button', title: 'Rinomina' },
+    nameText, nameHint, icon('rename', 14));
+  const nameInput = h('input', {
+    class: 'object-name-input', type: 'text', maxlength: 120, spellcheck: 'false',
+    'aria-label': 'Nome del modello (Invio per salvare, Esc per annullare)',
+  }) as HTMLInputElement;
+  nameInput.hidden = true;
+  const name = h('h1', { class: 'object-name' }, nameBtn, nameInput);
   const pill = h('span', { class: 'pill' });
+
+  let renaming = false;
+  const startRename = () => {
+    const c = app.state.current;
+    if (!c || nameBtn.disabled) return;
+    renaming = true;
+    nameInput.value = c.title ?? app.modelTitle();
+    nameBtn.hidden = true;
+    nameInput.hidden = false;
+    nameInput.focus();
+    nameInput.select();
+  };
+  const endRename = (save: boolean) => {
+    if (!renaming) return;
+    renaming = false;
+    const c = app.state.current;
+    nameInput.hidden = true;
+    nameBtn.hidden = false;
+    if (save && c) void app.rename(c, nameInput.value);
+    nameBtn.focus();
+  };
+  nameBtn.addEventListener('click', startRename);
+  nameInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); endRename(true); }
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); endRename(false); }
+  });
+  nameInput.addEventListener('blur', () => endRename(true));
   const editBtn = h(
     'button',
     { class: 'icon-btn', type: 'button', 'aria-label': 'Modifica la forma (E)', title: 'Modifica la forma · E', onclick: () => app.setEdit() },
@@ -59,8 +99,14 @@ export function mountTopbar(root: HTMLElement, app: App): void {
   );
 
   const update = (s: AppState) => {
-    name.textContent = app.modelTitle(s);
-    name.title = name.textContent;
+    const text = app.modelTitle(s);
+    nameText.textContent = text;
+    // only the model on the bed has a name to change, not a job or a preview in progress
+    const renamable = !!s.current && !app.working(s) && !s.draft;
+    nameBtn.disabled = !renamable;
+    nameHint.hidden = !renamable;
+    nameBtn.title = renamable ? `${text} · clic per rinominare` : text;
+    if (renaming && !renamable) endRename(false);
     const st = status(app, s);
     pill.hidden = !st;
     if (st) {

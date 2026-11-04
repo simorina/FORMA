@@ -6,6 +6,7 @@ export type Quality = 'draft' | 'standard' | 'high';
 export interface PrintSettings {
   target_size_mm: number;
   orientation: Orientation;
+  flat_bottom_mm: number;
   hollow: boolean;
   wall_mm: number;
   base_plate: boolean;
@@ -56,6 +57,9 @@ export interface Report {
   pla_grams_typical: number;
   overhang_pct: number;
   overhang_warning: boolean;
+  thin_pct?: number;
+  thin_mm?: number | null;
+  bed_contact_cm2?: number;
   components: number;
   warnings: string[];
   hollowed: boolean;
@@ -69,6 +73,7 @@ export type ExportFormat = 'stl' | '3mf' | 'obj' | 'glb';
 export interface Model {
   id: string;
   prompt: string;
+  title?: string;
   provider: string | null;
   model: string | null;
   kind: 'text' | 'image' | 'upload' | 'edit';
@@ -115,12 +120,16 @@ export interface Draft {
   draft_id: string;
   url: string;
   prompt: string;
+  prompt_en: string | null;
   seed: number;
   provider: string;
 }
 
 /** Mesh files the print pipeline can repair and prepare. */
 export const MESH_EXTENSIONS = ['stl', 'obj', '3mf', 'glb', 'ply', 'off'];
+
+/** Largest photo or mesh the backend accepts. */
+export const MAX_UPLOAD = 40 * 1024 * 1024;
 
 export class ApiError extends Error {
   constructor(
@@ -205,12 +214,19 @@ export const api = {
   models: () => request<{ models: Model[] }>('/api/models?limit=60'),
 
   remove: (id: string) => request<{ ok: boolean }>(`/api/models/${id}`, { method: 'DELETE' }),
+
+  /** A name of your own for a model (empty: back to its prompt). */
+  rename(id: string, title: string) {
+    const form = new FormData();
+    form.set('title', title);
+    return request<Model>(`/api/models/${id}`, { method: 'PATCH', body: form });
+  },
 };
 
 /** File name the backend will use for a download (prompt slug + size), for the preview line. */
 export function exportName(model: Model, fmt: ExportFormat): string {
   const slug =
-    (model.prompt || 'forma')
+    (model.title || model.prompt || 'forma')
       .normalize('NFKD')
       .replace(/[̀-ͯ]/g, '')
       .replace(/[^a-zA-Z0-9]+/g, '-')

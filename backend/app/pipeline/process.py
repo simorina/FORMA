@@ -13,6 +13,7 @@ import numpy as np
 import trimesh
 from scipy import ndimage
 
+from .fmt import it_num
 from .repair import (
     fill_surface,
     from_manifold,
@@ -380,7 +381,7 @@ def process_mesh(
         cut = cut_flat_bottom(work, s.flat_bottom_mm)
         if cut is not None:
             work = scale_to(place_on_bed(cut), s.target_size_mm)
-            steps.append(f"fondo tagliato in piano ({s.flat_bottom_mm:g} mm)")
+            steps.append(f"fondo tagliato in piano ({it_num(s.flat_bottom_mm)} mm)")
         else:
             steps.append("base piana saltata (taglio troppo alto per questo modello)")
 
@@ -389,14 +390,14 @@ def process_mesh(
         hollowed = hollow(work, s.wall_mm)
         if hollowed is not None:
             work = hollowed
-            steps.append(f"svuotato, pareti {s.wall_mm:g} mm")
+            steps.append(f"svuotato, pareti {it_num(s.wall_mm)} mm")
         else:
             steps.append("svuotamento saltato (pareti troppo sottili)")
 
     if s.base_plate:
         notify("Base", 0.72)
         work = add_base_plate(place_on_bed(work), s.base_thickness_mm, s.base_margin_mm)
-        steps.append(f"base {s.base_thickness_mm:g} mm aggiunta")
+        steps.append(f"base {it_num(s.base_thickness_mm)} mm aggiunta")
         # The requested size is the size of the whole print, plate included.
         if work.extents.max() > s.target_size_mm * 1.0005:
             work = scale_to(work, s.target_size_mm)
