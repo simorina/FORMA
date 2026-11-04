@@ -1,0 +1,65 @@
+# syntax=docker/dockerfile:1.7
+# Forma con inferenza locale su GPU NVIDIA (>= 24 GB di VRAM): FLUX.1-schnell + Pixal3D / TRELLIS.2.
+#   docker compose --profile gpu up --build forma-gpu    ->  http://localhost:8001
+#
+# Segue gli installer ufficiali (TRELLIS.2 setup.sh, Pixal3D requirements + natten + utils3d) ai
+# commit verificati il 2026-11-04. Non è stato costruito nell'ambiente di sviluppo (né demone
+# Docker né GPU): se un passaggio upstream cambia, aggiornalo qui.
+
+FROM node:22-bookworm-slim AS web
+WORKDIR /src/frontend
+COPY frontend/package.json frontend/package-lock.json frontend/.npmrc ./
+RUN npm ci --no-audit --no-fund
+COPY frontend/ ./
+RUN npm run build
+
+FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04 AS gpu
+ARG TRELLIS2_REF=75fbf01
+ARG PIXAL3D_REF=f7cf384
+# GPU architectures to compile for: 8.0 A100, 8.6 RTX 30xx, 8.9 RTX 40xx, 9.0 H100.
+ARG CUDA_ARCH="8.0;8.6;8.9;9.0"
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    CONDA_DIR=/opt/conda \
+    PATH=/opt/conda/bin:$PATH \
+    CUDA_HOME=/usr/local/cuda \
+    TORCH_CUDA_ARCH_LIST=${CUDA_ARCH}
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git curl ca-certificates build-essential ninja-build \
+      libgl1 libopengl0 libglib2.0-0 libgomp1 \
+ && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -o /tmp/miniforge.sh \
+ && bash /tmp/miniforge.sh -b -p "$CONDA_DIR" && rm /tmp/miniforge.sh \
+ && conda create -y -n forma python=3.10 && conda clean -afy
+SHELL ["conda", "run", "--no-capture-output", "-n", "forma", "/bin/bash", "-c"]
+
+# PyTorch 2.6 + CUDA 12.4, the combination TRELLIS.2's installer targets.
+RUN pip install --no-cache-dir torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124
+
+WORKDIR /opt
+RUN git clone --recursive https://github.com/microsoft/TRELLIS.2.git \
+ && cd TRELLIS.2 && git checkout ${TRELLIS2_REF} && git submodule update --init --recursive
+WORKDIR /opt/TRELLIS.2
+RUN . ./setup.sh --basic --flash-attn --nvdiffrast --nvdiffrec --cumesh --o-voxel --flexgemm
+
+WORKDIR /opt
+RUN git clone https://github.com/TencentARC/Pixal3D.git && cd Pixal3D && git checkout ${PIXAL3D_REF} \
+ && pip install --no-cache-dir -r requirements.txt
+RUN NATTEN_CUDA_ARCH="${CUDA_ARCH}" NATTEN_N_WORKERS=8 pip install natten==0.21.0 --no-build-isolation
+RUN pip install --no-cache-dir https://github.com/LDYang694/Storages/releases/download/20260430/utils3d-0.0.2-py3-none-any.whl
+ENV PYTHONPATH=/opt/Pixal3D:/opt/TRELLIS.2
+
+# Forma's backend in the same environment (torch is already there).
+WORKDIR /app/backend
+COPY backend/ ./
+RUN pip install --no-cache-dir -e ".[gpu]"
+COPY --from=web /src/frontend/dist /app/frontend/dist
+
+ENV GEN_PROVIDER=local \
+    LOCAL_SHAPE_MODEL=pixal3d \
+    DATA_DIR=/data \
+    HF_HOME=/data/huggingface \
+    ATTN_BACKEND=flash_attn
+VOLUME ["/data"]
+EXPOSE 8000
+CMD ["conda", "run", "--no-capture-output", "-n", "forma", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
