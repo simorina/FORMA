@@ -70,6 +70,9 @@ class Settings:
 
     max_workers: int = 2
 
+    # The built frontend the backend serves; None: <repo>/frontend/dist (as in Docker).
+    frontend_dist: Path | None = None
+
     @classmethod
     def from_env(cls) -> Settings:
         _load_dotenv()

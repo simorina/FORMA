@@ -3,7 +3,7 @@
  * on the left, the wordmark in the centre, actions and the primary download on the right.
  */
 import type { App, AppState } from '../app';
-import { h } from '../lib/dom';
+import { attr, h, memo, prop } from '../lib/dom';
 import { icon, mark } from '../lib/icons';
 
 interface Status {
@@ -105,33 +105,37 @@ export function mountTopbar(root: HTMLElement, app: App): void {
     h('div', { class: 'topbar-actions' }, guideBtn, editBtn, historyBtn, helpBtn, rule, download),
   );
 
+  // the pill is redrawn only when its words change: a new spinner would restart its turn
+  const pillView = memo();
   const update = (s: AppState) => {
     const text = app.modelTitle(s);
-    nameText.textContent = text;
+    prop(nameText, 'textContent', text);
     // only the model on the bed has a name to change, not a job or a preview in progress
     const renamable = !!s.current && !app.working(s) && !s.draft;
-    nameBtn.disabled = !renamable;
-    nameHint.hidden = !renamable;
-    nameBtn.title = renamable ? `${text} · clic per rinominare` : text;
+    prop(nameBtn, 'disabled', !renamable);
+    prop(nameHint, 'hidden', !renamable);
+    prop(nameBtn, 'title', renamable ? `${text} · clic per rinominare` : text);
     if (renaming && !renamable) endRename(false);
     const st = status(app, s);
-    pill.hidden = !st;
+    prop(pill, 'hidden', !st);
     if (st) {
-      pill.className = `pill pill-${st.tone}`;
-      pill.replaceChildren(st.busy ? icon('spinner', 12) : '', st.text);
+      pillView([st.tone, st.text, !!st.busy], () => {
+        pill.className = `pill pill-${st.tone}`;
+        pill.replaceChildren(st.busy ? icon('spinner', 12) : '', st.text);
+      });
     }
-    editBtn.setAttribute('aria-pressed', String(s.edit));
-    editBtn.disabled = !s.current || app.generating(s);
-    historyBtn.setAttribute('aria-pressed', String(s.panel === 'history'));
+    attr(editBtn, 'aria-pressed', String(s.edit));
+    prop(editBtn, 'disabled', !s.current || app.generating(s));
+    attr(historyBtn, 'aria-pressed', String(s.panel === 'history'));
     const c = s.current;
     const ready = !!c && s.sculpt.steps === 0; // the server's file would not have the edits
-    download.hidden = !c;
-    rule.hidden = !c;
+    prop(download, 'hidden', !c);
+    prop(rule, 'hidden', !c);
     if (c) {
-      download.setAttribute('href', c.urls.export['3mf']);
-      download.setAttribute('download', '');
-      download.setAttribute('aria-disabled', String(!ready));
-      download.title = ready ? 'Scarica il file per lo slicer (3MF, millimetri)' : 'Ripara le modifiche prima di scaricare';
+      attr(download, 'href', c.urls.export['3mf']);
+      attr(download, 'download', '');
+      attr(download, 'aria-disabled', String(!ready));
+      prop(download, 'title', ready ? 'Scarica il file per lo slicer (3MF, millimetri)' : 'Ripara le modifiche prima di scaricare');
     }
   };
   download.addEventListener('click', (e) => {

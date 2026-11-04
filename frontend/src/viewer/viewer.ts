@@ -96,6 +96,7 @@ export class Viewer {
   private view: View = 'iso';
   private holdView = false; // a quick view was picked: no auto-rotate until the user moves
   private dirty = true;
+  private castVersion = -1; // version of the model's positions the shadow map was drawn with
   private raf = 0;
   private reveal: { start: number; height: number } | null = null;
   private tween: Tween | null = null;
@@ -118,6 +119,11 @@ export class Viewer {
     this.renderer.shadowMap.enabled = true;
     // r186: PCF samples a Vogel disk scaled by shadow.radius (PCFSoftShadowMap was removed)
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
+    // Only the model casts a shadow (unclipped: clipShadows is off) and the key light moves only
+    // when the view is framed, so the shadow map is redrawn when one of them changes (see draw),
+    // not on every frame of an orbit, the auto-rotate or the reveal.
+    this.renderer.shadowMap.autoUpdate = false;
+    this.renderer.shadowMap.needsUpdate = true;
     this.renderer.localClippingEnabled = true;
     this.renderer.setClearColor(0x000000, 0);
     this.renderer.domElement.className = 'viewport-canvas';
@@ -240,6 +246,8 @@ export class Viewer {
 
     this.renderer.domElement.addEventListener('pointerdown', () => this.touch());
     this.renderer.domElement.addEventListener('wheel', () => this.touch(), { passive: true });
+    // a restored context comes back with an empty shadow map
+    this.renderer.domElement.addEventListener('webglcontextrestored', () => this.shadowsChanged());
 
     this.resize = new ResizeObserver(() => this.onResize());
     this.resize.observe(host);
@@ -443,7 +451,7 @@ export class Viewer {
 
   /** A PNG of the current view (for the share sheet and screenshots). */
   snapshot(): string {
-    this.renderer.render(this.scene, this.camera);
+    this.draw();
     return this.renderer.domElement.toDataURL('image/png');
   }
 
@@ -488,6 +496,7 @@ export class Viewer {
     const size = this.size()!;
     this.fade.value = Math.max(8, size[2] * 0.35);
     this.dims.update(g.boundingBox);
+    this.shadowsChanged();
   }
 
   private disposeModel(): void {
@@ -502,6 +511,7 @@ export class Viewer {
     this.reveal = null;
     this.section = null;
     this.clip.constant = this.mirrorClip.constant = 1e6;
+    this.shadowsChanged(); // its shadow goes with it
   }
 
   private shapeChanged(): void {
@@ -540,6 +550,23 @@ export class Viewer {
     cam.near = 1;
     cam.far = r * 6;
     cam.updateProjectionMatrix();
+    this.shadowsChanged();
+  }
+
+  /** The key light or the model that casts the shadow changed: redraw the shadow map. */
+  private shadowsChanged(): void {
+    this.renderer.shadowMap.needsUpdate = true;
+    this.dirty = true;
+  }
+
+  /** Render a frame; a sculpt stroke, undo or redo moves the model's vertices and its shadow. */
+  private draw(): void {
+    const pos = this.mesh?.geometry.getAttribute('position') as THREE.BufferAttribute | undefined;
+    if (pos && pos.version !== this.castVersion) {
+      this.castVersion = pos.version;
+      this.renderer.shadowMap.needsUpdate = true;
+    }
+    this.renderer.render(this.scene, this.camera);
   }
 
   private touch(): void {
@@ -588,7 +615,7 @@ export class Viewer {
     if (this.controls.autoRotate) this.dirty = true;
     if (!this.dirty) return;
     this.dirty = false;
-    this.renderer.render(this.scene, this.camera);
+    this.draw();
     this.labels.render(this.scene, this.camera);
   };
 }

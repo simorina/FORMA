@@ -10,7 +10,7 @@ import { DEFAULT_FILAMENT, filamentByKey, uiColor } from './lib/filaments';
 import { estimate, materialByKey, type Estimate } from './lib/materials';
 import { TOUR_STEPS } from './lib/tour';
 import { PRINTERS, fitOnBed, type Printer } from './lib/printers';
-import { createStore, saved, type Store } from './lib/store';
+import { createStore, sameFields, sameItems, sameJson, saved, type Store } from './lib/store';
 import { title } from './lib/format';
 import type { SculptState } from './edit/sculpt';
 import type { View, Viewer } from './viewer/viewer';
@@ -55,7 +55,6 @@ export interface AppState {
   view: View | null; // the quick view the camera is in (null: orbited freely)
   section: number | null; // cut height as a fraction of the model, or null
   job: Job | null;
-  lastRequest: GenerateRequest | null;
   current: Model | null;
   shape: [number, number, number] | null; // live size in the viewer (changes while sculpting)
   history: Model[];
@@ -109,7 +108,6 @@ function initial(): AppState {
     view: 'iso',
     section: null,
     job: null,
-    lastRequest: null,
     current: null,
     shape: null,
     history: [],
@@ -128,9 +126,13 @@ function initial(): AppState {
 }
 
 export class App {
-  readonly store: Store<AppState> = createStore(initial());
+  // the viewer reports its size and sculpt state as fresh copies, and polling refetches the job:
+  // equal values must not wake every panel
+  readonly store: Store<AppState> = createStore(initial(), { shape: sameItems, sculpt: sameFields, job: sameJson });
   viewer: Viewer | null = null;
   private pollTimer = 0;
+  /** for Riprova; no view shows it, so it stays out of the store (a set would wake every panel) */
+  private lastRequest: GenerateRequest | null = null;
 
   get state(): AppState {
     return this.store.get();
@@ -219,9 +221,11 @@ export class App {
   async loadHistory(openLatest = false): Promise<void> {
     try {
       const { models } = await api.models();
-      this.store.set({ history: models, historyLoaded: true });
+      const loaded = { history: models, historyLoaded: true };
       if (openLatest && models.length && !this.state.current && !this.generating()) {
-        await this.select(models[0], { reveal: false });
+        await this.select(models[0], { reveal: false }, loaded);
+      } else {
+        this.store.set(loaded);
       }
     } catch {
       this.store.set({ historyLoaded: true });
@@ -314,8 +318,7 @@ export class App {
         file, prompt: file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim(),
         settings: this.pick(this.state.settings),
       });
-      this.store.set({ history: [model, ...this.state.history], busy: null });
-      await this.select(model, { reveal: true });
+      await this.select(model, { reveal: true }, { history: [model, ...this.state.history] });
       const fixes = model.report.repairs.length;
       toast(fixes ? `Mesh riparata (${fixes} interventi) e pronta per la stampa.` : 'Mesh già valida: preparata per la stampa.', { tone: 'positive' });
     } catch (e) {
@@ -326,12 +329,13 @@ export class App {
   }
 
   retry(): void {
-    const req = this.state.lastRequest;
+    const req = this.lastRequest;
     if (req) void this.submit({ ...req, seed: Math.floor(Math.random() * 2 ** 31) });
   }
 
   private async submit(req: GenerateRequest): Promise<void> {
-    this.store.set({ lastRequest: req, sheet: null, section: null });
+    this.lastRequest = req;
+    this.store.set({ sheet: null, section: null });
     this.viewer?.setSection(null);
     try {
       const { job } = await api.generate(req);
@@ -368,8 +372,7 @@ export class App {
 
   private async finish(model: Model): Promise<void> {
     const history = [model, ...this.state.history.filter((m) => m.id !== model.id)];
-    this.store.set({ history });
-    await this.select(model, { reveal: true });
+    await this.select(model, { reveal: true }, { history });
     this.store.set({ job: null });
     const fb = model.gen_meta?.fallback_from;
     if (fb) toast(`${fb} non era disponibile: modello generato con ${model.model}.`);
@@ -381,13 +384,15 @@ export class App {
   }
 
   // -- models ----------------------------------------------------------------------------
-  async select(model: Model, opts: { reveal?: boolean; keepView?: boolean } = {}): Promise<void> {
+  /** Put a model on the bed. `patch` joins the same update (e.g. the history the model enters). */
+  async select(model: Model, opts: { reveal?: boolean; keepView?: boolean } = {}, patch: Partial<AppState> = {}): Promise<void> {
     if (this.state.edit) this.setEdit(false, { silent: true });
     if (this.state.section !== null) this.setSection(null);
-    this.store.set({ current: model, shape: null, settings: { ...this.state.settings, ...model.settings }, busy: 'load' });
+    this.store.set({ ...patch, current: model, shape: null, settings: { ...this.state.settings, ...model.settings }, busy: 'load' });
     try {
       const shape = (await this.viewer?.load(model.urls.mesh, opts)) ?? null;
-      if (this.state.current?.id === model.id) this.store.set({ shape });
+      // the size and the end of the load in one update
+      if (this.state.current?.id === model.id) this.store.set(this.state.busy === 'load' ? { shape, busy: null } : { shape });
     } catch (e) {
       if (!(e instanceof Error && e.message === 'superseded')) {
         toast('Non riesco a caricare la mesh di questo modello.', { tone: 'negative' });
@@ -420,8 +425,8 @@ export class App {
     this.store.set({ busy: 'apply' });
     try {
       const model = await api.process({ modelId: c.id, settings: this.pick(this.state.settings) });
-      this.replace(model);
-      await this.select(model, { keepView: false });
+      const history = this.state.history.map((m) => (m.id === model.id ? model : m));
+      await this.select(model, { keepView: false }, { history });
       toast('Impostazioni applicate.');
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e), { tone: 'negative' });
@@ -441,19 +446,14 @@ export class App {
         modelId: c.id, prompt: c.prompt, stl,
         settings: { ...this.pick(this.state.settings), orientation: 'keep' },
       });
-      this.store.set({ history: [model, ...this.state.history] });
       this.setEdit(false, { silent: true });
-      await this.select(model, { keepView: true });
+      await this.select(model, { keepView: true }, { history: [model, ...this.state.history] });
       toast('Modifiche riparate: il nuovo modello è in cronologia.', { tone: 'positive' });
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e), { tone: 'negative' });
     } finally {
       this.store.set({ busy: null });
     }
-  }
-
-  private replace(model: Model): void {
-    this.store.set({ history: this.state.history.map((m) => (m.id === model.id ? model : m)) });
   }
 
   private pick(s: PrintSettings): Partial<PrintSettings> {

@@ -6,7 +6,7 @@
 import type { App, AppState } from '../app';
 import type { View } from '../viewer/viewer';
 import type { Stage } from '../lib/api';
-import { h, render } from '../lib/dom';
+import { attr, h, memo, prop, render } from '../lib/dom';
 import { mm, num } from '../lib/format';
 import { icon } from '../lib/icons';
 
@@ -87,86 +87,92 @@ export function mountStage(root: HTMLElement, app: App): void {
   card.bar.append(card.fill, card.value);
   progress.append(card.figure, h('div', { class: 'progress-body' }, card.stages, card.message, card.bar, card.actions));
 
+  // each overlay redraws only when what it shows changes (see memo in lib/dom)
+  const fatalView = memo(), emptyView = memo(), legendView = memo(), fillView = memo();
   let prev: AppState | null = null;
   const update = (s: AppState) => {
     const busyStage = app.generating(s) || s.busy === 'upload';
     root.classList.toggle('is-generating', busyStage);
     root.classList.toggle('is-editing', s.edit);
-    rotateBtn.setAttribute('aria-pressed', String(s.autoRotate));
-    overBtn.setAttribute('aria-pressed', String(s.overhang));
-    sectionBtn.setAttribute('aria-pressed', String(s.section !== null));
-    wireBtn.setAttribute('aria-pressed', String(s.wireframe));
-    overBtn.disabled = sectionBtn.disabled = wireBtn.disabled = !s.current;
-    hint.hidden = !s.edit;
-    dock.hidden = !!s.viewerError;
-    presets.hidden = !s.current;
-    for (const b of viewBtns) b.setAttribute('aria-pressed', String(b.dataset.view === s.view));
+    attr(rotateBtn, 'aria-pressed', String(s.autoRotate));
+    attr(overBtn, 'aria-pressed', String(s.overhang));
+    attr(sectionBtn, 'aria-pressed', String(s.section !== null));
+    attr(wireBtn, 'aria-pressed', String(s.wireframe));
+    for (const b of [overBtn, sectionBtn, wireBtn]) prop(b, 'disabled', !s.current);
+    prop(hint, 'hidden', !s.edit);
+    prop(dock, 'hidden', !!s.viewerError);
+    prop(presets, 'hidden', !s.current);
+    for (const b of viewBtns) attr(b, 'aria-pressed', String(b.dataset.view === s.view));
 
     // fatal: the backend is down, or WebGL is missing
     const fatalText = s.offline ?? s.viewerError;
-    fatal.hidden = !fatalText;
-    if (fatalText && (!prev || (prev.offline ?? prev.viewerError) !== fatalText)) {
-      render(fatal, h('h2', { class: 'stage-title' }, s.offline ? 'Il server non risponde' : 'Vista 3D non disponibile'),
+    prop(fatal, 'hidden', !fatalText);
+    if (fatalText) {
+      fatalView([fatalText, !!s.offline], () => render(fatal,
+        h('h2', { class: 'stage-title' }, s.offline ? 'Il server non risponde' : 'Vista 3D non disponibile'),
         h('p', null, fatalText),
-        s.offline ? h('button', { class: 'btn btn-secondary', type: 'button', onclick: () => location.reload() }, 'Riprova') : null);
+        s.offline ? h('button', { class: 'btn btn-secondary', type: 'button', onclick: () => location.reload() }, 'Riprova') : null));
     }
 
     // the preview image: while it is made, then waiting for approval
     const showDraft = s.drafting || !!s.draft;
-    draftCard.hidden = !showDraft;
+    prop(draftCard, 'hidden', !showDraft);
     if (showDraft) {
-      draftWait.hidden = !s.drafting;
-      draftImg.hidden = s.drafting || !s.draft;
+      prop(draftWait, 'hidden', !s.drafting);
+      prop(draftImg, 'hidden', s.drafting || !s.draft);
       if (s.draft && draftImg.getAttribute('src') !== s.draft.url) draftImg.src = s.draft.url;
-      draftTitle.textContent = s.drafting ? 'Creo l’immagine di partenza…' : 'Ti convince questa forma?';
-      draftText.textContent = s.drafting
+      prop(draftTitle, 'textContent', s.drafting ? 'Creo l’immagine di partenza…' : 'Ti convince questa forma?');
+      prop(draftText, 'textContent', s.drafting
         ? 'Prima un’immagine, veloce; il modello 3D, che usa la GPU, parte solo quando la approvi.'
-        : 'Il modello 3D seguirà questa immagine. Se non è l’oggetto che volevi, chiedine un’altra: costa poco.';
-      draftMeta.textContent = s.draft && !s.drafting ? `“${s.draft.prompt}”` : '';
+        : 'Il modello 3D seguirà questa immagine. Se non è l’oggetto che volevi, chiedine un’altra: costa poco.');
+      prop(draftMeta, 'textContent', s.draft && !s.drafting ? `“${s.draft.prompt}”` : '');
       // the image model reads English: show what it was really asked
       const en = !s.drafting && s.draft?.prompt_en;
-      draftEn.hidden = !en;
-      draftEn.textContent = en ? `In inglese per il modello d’immagine: “${en}”` : '';
-      approve.disabled = s.drafting || !s.draft;
-      another.disabled = s.drafting;
+      prop(draftEn, 'hidden', !en);
+      prop(draftEn, 'textContent', en ? `In inglese per il modello d’immagine: “${en}”` : '');
+      prop(approve, 'disabled', s.drafting || !s.draft);
+      prop(another, 'disabled', s.drafting);
     }
 
     // first run: nothing on the bed and nothing cooking
     const showEmpty = !s.current && !s.job && !fatalText && s.historyLoaded && !showDraft && s.busy !== 'upload';
-    empty.hidden = !showEmpty;
-    if (showEmpty && (!prev || prev.providers !== s.providers || prev.provider !== s.provider || prev.historyLoaded !== s.historyLoaded || prev.printer !== s.printer)) {
-      render(empty,
+    prop(empty, 'hidden', !showEmpty);
+    if (showEmpty) {
+      const note = honestNote(s);
+      emptyView([note], () => render(empty,
         h('p', { class: 'kicker' }, 'Atelier di stampa 3D'),
         h('h2', { class: 'stage-title stage-hero' }, 'Il piatto ', h('em', null, 'è vuoto')),
         h('p', null, 'Descrivi un oggetto, carica una foto o una mesh da riparare. Forma lo modella in 3D, lo ripara e lo prepara in millimetri per la tua stampante.'),
-        h('p', { class: 'meta' }, honestNote(s)),
-        h('button', { class: 'btn btn-secondary btn-small stage-tour', type: 'button', onclick: () => app.startTour() }, icon('guide'), 'Scopri come funziona'));
+        h('p', { class: 'meta' }, note),
+        h('button', { class: 'btn btn-secondary btn-small stage-tour', type: 'button', onclick: () => app.startTour() }, icon('guide'), 'Scopri come funziona')));
     }
 
     // overhang legend and section slider
     const over = s.current?.report.overhang_pct ?? 0;
-    legend.hidden = !s.overhang || !s.current || s.edit;
-    if (!legend.hidden) {
-      legend.replaceChildren(
-        h('span', { class: 'legend-dot', style: { background: app.viewer?.overhangColor() ?? '#ff4d5e' } }),
-        over > 0.5
-          ? `Sbalzi oltre 45° sul ${num(over)}% della superficie: lì servono supporti`
-          : 'Nessuno sbalzo oltre 45°: si stampa senza supporti');
+    const legendHidden = !s.overhang || !s.current || s.edit;
+    prop(legend, 'hidden', legendHidden);
+    if (!legendHidden) {
+      const color = app.viewer?.overhangColor() ?? '#ff4d5e';
+      const said = over > 0.5
+        ? `Sbalzi oltre 45° sul ${num(over)}% della superficie: lì servono supporti`
+        : 'Nessuno sbalzo oltre 45°: si stampa senza supporti';
+      legendView([color, said], () => legend.replaceChildren(h('span', { class: 'legend-dot', style: { background: color } }), said));
     }
-    sectionPanel.hidden = s.section === null || !s.current;
-    if (!sectionPanel.hidden && s.section !== null) {
+    const sectionHidden = s.section === null || !s.current;
+    prop(sectionPanel, 'hidden', sectionHidden);
+    if (!sectionHidden && s.section !== null) {
       const z = (app.size(s)?.[2] ?? 0) * s.section;
-      if (document.activeElement !== sectionRange) sectionRange.value = String(Math.round(s.section * 100));
-      sectionValue.textContent = `${mm(z)} mm`;
+      if (document.activeElement !== sectionRange) prop(sectionRange, 'value', String(Math.round(s.section * 100)));
+      prop(sectionValue, 'textContent', `${mm(z)} mm`);
     }
-    corner.hidden = legend.hidden && sectionPanel.hidden;
+    prop(corner, 'hidden', legendHidden && sectionHidden);
 
     // generation stages: built once, updated in place (polling must not recreate the image)
     const job = s.job;
-    progress.hidden = !job;
+    prop(progress, 'hidden', !job);
     if (job && (!prev || prev.job !== job)) {
       const failed = job.status === 'error';
-      card.figure.hidden = !job.image_url;
+      prop(card.figure, 'hidden', !job.image_url);
       if (job.image_url && card.img.getAttribute('src') !== job.image_url) card.img.src = job.image_url;
       const stagesKey = job.stages.map((st) => `${st.key}:${st.status}`).join('|');
       if (card.stages.dataset.key !== stagesKey) {
@@ -175,14 +181,16 @@ export function mountStage(root: HTMLElement, app: App): void {
           h('span', { class: 'stage-mark' }, STAGE_ICON[st.status] ? icon(STAGE_ICON[st.status], 12) : ''),
           h('span', null, st.label))));
       }
-      card.message.className = failed ? 'progress-message is-error' : 'progress-message';
-      card.message.textContent = failed ? (job.error ?? 'Generazione non riuscita.') : job.message;
-      card.bar.hidden = failed;
-      card.actions.hidden = !failed;
+      prop(card.message, 'className', failed ? 'progress-message is-error' : 'progress-message');
+      prop(card.message, 'textContent', failed ? (job.error ?? 'Generazione non riuscita.') : job.message);
+      prop(card.bar, 'hidden', failed);
+      prop(card.actions, 'hidden', !failed);
       const pct = Math.round(job.progress * 100);
-      card.bar.setAttribute('aria-valuenow', String(pct));
-      card.fill.style.width = `${(job.progress * 100).toFixed(1)}%`;
-      card.value.textContent = `${num(pct)}%`;
+      attr(card.bar, 'aria-valuenow', String(pct));
+      // (the style reads back "45%" for "45.0%": compare with what was written)
+      const width = `${(job.progress * 100).toFixed(1)}%`;
+      fillView([width], () => { card.fill.style.width = width; });
+      prop(card.value, 'textContent', `${num(pct)}%`);
     }
     prev = s;
   };

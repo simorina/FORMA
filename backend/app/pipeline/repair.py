@@ -9,6 +9,7 @@ Finally we validate with manifold3d, the same kernel used for booleans.
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass
 
 import manifold3d as mf
@@ -17,6 +18,12 @@ import trimesh
 from scipy import ndimage
 
 log = logging.getLogger(__name__)
+
+# fast_simplification keeps the mesh it decimates in module-level C++ state and loads,
+# simplifies and reads it back in separate calls: two threads decimating at once (two jobs,
+# or a job and "Applica") can get each other's mesh back. Hold this lock around every call;
+# the C++ code keeps the GIL while it runs, so this serialises nothing that ran in parallel.
+DECIMATION_LOCK = threading.Lock()
 
 
 def to_manifold(mesh: trimesh.Trimesh) -> mf.Manifold | None:

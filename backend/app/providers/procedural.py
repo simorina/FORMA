@@ -305,7 +305,9 @@ class ProceduralProvider(Provider):
         solid = fn(rng)
         mesh = _to_trimesh(solid)
         progress("shape", 1.0, f"Forma: {label}")
-        preview: Image.Image = render_preview(mesh, up="z")
+        # With an input image (a photo, or a draft the user approved) that image is the one
+        # kept: a render here would be thrown away.
+        preview: Image.Image | None = render_preview(mesh, up="z") if image is None else None
         return GenerationResult(
             mesh=mesh, image=preview, model="parametric", meta={"shape": label, "up": "z"}
         )

@@ -6,6 +6,13 @@ import numpy as np
 import trimesh
 from PIL import Image, ImageDraw, ImageFilter
 
+from .pipeline.repair import DECIMATION_LOCK
+
+SHADOW_BLUR = 14
+# The blurred shadow reaches about 3 * SHADOW_BLUR past its ellipse (three box-blur passes):
+# blurring only that neighbourhood gives the same pixels as blurring the whole frame.
+SHADOW_PAD = 4 * SHADOW_BLUR
+
 
 def _rotation(yaw: float, pitch: float) -> np.ndarray:
     cy, sy = np.cos(yaw), np.sin(yaw)
@@ -13,6 +20,54 @@ def _rotation(yaw: float, pitch: float) -> np.ndarray:
     rz = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]])
     rx = np.array([[1, 0, 0], [0, cp, -sp], [0, sp, cp]])
     return rx @ rz
+
+
+def _decimated(mesh: trimesh.Trimesh, max_faces: int) -> tuple[np.ndarray, np.ndarray]:
+    """Vertices and faces with at most ``max_faces`` faces (quadric decimation)."""
+    vertices = np.asarray(mesh.vertices, dtype=float)
+    faces = np.asarray(mesh.faces)
+    if len(faces) <= max_faces:
+        return vertices, faces
+    try:
+        # The same decimation as Trimesh.simplify_quadric_decimation, without building (and
+        # vertex-merging) a Trimesh around the result: the triangles are the same.
+        from fast_simplification import simplify
+
+        with DECIMATION_LOCK:
+            v, f = simplify(vertices, faces, target_count=max_faces)
+        return np.asarray(v, dtype=float), np.asarray(f)
+    except Exception:  # pragma: no cover - fast_simplification missing
+        idx = np.random.default_rng(0).choice(len(faces), max_faces, replace=False)
+        return vertices, faces[idx]
+
+
+def _backdrop(size: int, xy: np.ndarray) -> Image.Image:
+    """The ivory studio sweep of the interface, with a soft contact shadow under the model."""
+    top, bottom = np.array([250, 247, 241]), np.array([228, 219, 205])
+    t = np.linspace(0, 1, size)[:, None]
+    grad = (top[None, :] * (1 - t) + bottom[None, :] * t).astype(np.uint8)
+    img = Image.fromarray(np.repeat(grad[:, None, :], size, axis=1))
+
+    base_y = xy[:, 1].max()
+    w = (xy[:, 0].max() - xy[:, 0].min()) * 0.55
+    ellipse = [size / 2 - w, base_y - 12, size / 2 + w, base_y + 12]
+    # Blur only the box around the ellipse (the rest of the shadow mask stays 0).
+    box = (
+        max(0, int(ellipse[0]) - SHADOW_PAD),
+        max(0, int(ellipse[1]) - SHADOW_PAD),
+        min(size, int(ellipse[2]) + SHADOW_PAD + 1),
+        min(size, int(ellipse[3]) + SHADOW_PAD + 1),
+    )
+    if box[0] >= box[2] or box[1] >= box[3]:
+        return img
+    shadow = Image.new("L", (box[2] - box[0], box[3] - box[1]), 0)
+    ImageDraw.Draw(shadow).ellipse(
+        [ellipse[0] - box[0], ellipse[1] - box[1], ellipse[2] - box[0], ellipse[3] - box[1]],
+        fill=110,
+    )
+    shadow = shadow.filter(ImageFilter.GaussianBlur(SHADOW_BLUR))
+    img.paste((120, 104, 84), box, shadow)
+    return img
 
 
 def render_preview(
@@ -23,14 +78,7 @@ def render_preview(
     max_faces: int = 40000,
 ) -> Image.Image:
     """Render a soft-shaded 3/4 view of ``mesh`` on a neutral background."""
-    m = mesh
-    if len(m.faces) > max_faces:
-        try:
-            m = m.simplify_quadric_decimation(face_count=max_faces)
-        except Exception:  # pragma: no cover - fast_simplification missing
-            idx = np.random.default_rng(0).choice(len(m.faces), max_faces, replace=False)
-            m = trimesh.Trimesh(m.vertices, m.faces[idx], process=False)
-    v = np.asarray(m.vertices, dtype=float)
+    v, faces = _decimated(mesh, max_faces)
     if up == "y":
         v = v[:, [0, 2, 1]] * np.array([1, -1, 1])
     v = v - (v.max(0) + v.min(0)) / 2
@@ -42,7 +90,6 @@ def render_preview(
     xy = np.stack([p[:, 0] * scale + size / 2, -p[:, 2] * scale + size / 2], axis=1)
     depth = p[:, 1]
 
-    faces = np.asarray(m.faces)
     tri = p[faces]
     normals = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
     normals /= np.linalg.norm(normals, axis=1, keepdims=True) + 1e-12
@@ -54,30 +101,16 @@ def render_preview(
     rim = np.clip(1 + normals[:, 1], 0, 1) ** 3 * 0.25
     shade = np.clip(0.28 + 0.72 * lam + fill + rim, 0, 1.15)
 
+    # Back to front, faces turned to the camera only.
     order = np.argsort(-depth[faces].mean(axis=1))
-    img = Image.new("RGB", (size, size))
-    # Soft vertical gradient background: the ivory studio sweep of the interface.
-    top, bottom = np.array([250, 247, 241]), np.array([228, 219, 205])
-    grad = (top[None, :] * (1 - np.linspace(0, 1, size))[:, None] + bottom[None, :] * np.linspace(
-        0, 1, size
-    )[:, None]).astype(np.uint8)
-    img = Image.fromarray(np.repeat(grad[:, None, :], size, axis=1))
+    order = order[visible[order]]
+    img = _backdrop(size, xy)
 
-    # Contact shadow ellipse.
-    shadow = Image.new("L", (size, size), 0)
-    sd = ImageDraw.Draw(shadow)
-    base_y = xy[:, 1].max()
-    w = (xy[:, 0].max() - xy[:, 0].min()) * 0.55
-    sd.ellipse([size / 2 - w, base_y - 12, size / 2 + w, base_y + 12], fill=110)
-    shadow = shadow.filter(ImageFilter.GaussianBlur(14))
-    img.paste((120, 104, 84), (0, 0), shadow)
-
+    # Colours and corners for every face at once: the loop only hands them to PIL.
+    colours = np.clip(np.asarray(color, dtype=float)[None, :] * shade[order, None], 0, 255)
+    colours = map(tuple, colours.astype(np.uint8).tolist())
+    corners = xy[faces[order]].reshape(-1, 6).tolist()
     draw = ImageDraw.Draw(img)
-    base = np.array(color, dtype=float)
-    for fi in order:
-        if not visible[fi]:
-            continue
-        c = tuple(int(x) for x in np.clip(base * shade[fi], 0, 255))
-        pts = [tuple(xy[i]) for i in faces[fi]]
-        draw.polygon(pts, fill=c, outline=c)
+    for pts, c in zip(corners, colours, strict=True):
+        draw.polygon(pts, fill=c)  # an outline in the fill's colour would be skipped by PIL anyway
     return img

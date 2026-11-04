@@ -2,7 +2,7 @@
 import type { App, AppState } from '../app';
 import { FALLOFFS, falloffPath } from '../edit/falloff';
 import { TOOLS } from '../edit/sculpt';
-import { h, isMac, render, svg } from '../lib/dom';
+import { h, isMac, memo, prop, render, svg } from '../lib/dom';
 import { mm, num } from '../lib/format';
 import { icon } from '../lib/icons';
 
@@ -63,33 +63,36 @@ export function mountEditTools(root: HTMLElement, app: App): void {
       h('div', { class: 'finish' }, repair, discard)),
   );
 
+  // the tool and falloff buttons are rebuilt only when the choice changes, not on every stroke
+  const toolsView = memo(), falloffsView = memo(), repairView = memo();
   let prev: AppState | null = null;
   const update = (s: AppState) => {
     const st = s.sculpt;
     if (!prev || prev.sculpt !== st) {
-      render(tools, TOOLS.map((t) => h('button', {
+      toolsView([st.tool], () => render(tools, TOOLS.map((t) => h('button', {
         class: 'tool', type: 'button', role: 'radio', 'aria-checked': String(st.tool === t.key),
         title: `${t.label} · ${t.shortcut}`, onclick: () => sculpt()?.set({ tool: t.key }),
-      }, icon(TOOL_ICON[t.key]), h('span', null, t.label), h('kbd', null, t.shortcut))));
-      toolNote.textContent = TOOL_NOTE[st.tool];
-      if (document.activeElement !== radius) radius.value = String(toSlider(st.radius));
-      radiusValue.textContent = `${mm(st.radius)} mm`;
-      strength.value = String(Math.round(st.strength * 100));
-      strength.disabled = st.tool === 'grab';
-      strengthValue.textContent = st.tool === 'grab' ? 'segue il puntatore' : `${num(st.strength * 100)}%`;
-      render(falloffs, FALLOFFS.map((f) => h('button', {
+      }, icon(TOOL_ICON[t.key]), h('span', null, t.label), h('kbd', null, t.shortcut)))));
+      prop(toolNote, 'textContent', TOOL_NOTE[st.tool]);
+      if (document.activeElement !== radius) prop(radius, 'value', String(toSlider(st.radius)));
+      prop(radiusValue, 'textContent', `${mm(st.radius)} mm`);
+      prop(strength, 'value', String(Math.round(st.strength * 100)));
+      prop(strength, 'disabled', st.tool === 'grab');
+      prop(strengthValue, 'textContent', st.tool === 'grab' ? 'segue il puntatore' : `${num(st.strength * 100)}%`);
+      falloffsView([st.falloff], () => render(falloffs, FALLOFFS.map((f) => h('button', {
         class: 'falloff', type: 'button', role: 'radio', 'aria-checked': String(st.falloff === f.key),
         title: f.label, 'aria-label': f.label, onclick: () => sculpt()?.set({ falloff: f.key }),
       }, svg(`<svg width="36" height="18" viewBox="-2 -2 32 18" aria-hidden="true"><path d="${falloffPath(f.key)}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`),
-      h('span', null, f.label))));
-      symmetry.checked = st.symmetry;
-      undo.disabled = !st.canUndo;
-      redo.disabled = !st.canRedo;
-      steps.textContent = st.steps === 0 ? 'Nessuna modifica' : st.steps === 1 ? '1 modifica' : `${st.steps} modifiche`;
+      h('span', null, f.label)))));
+      prop(symmetry, 'checked', st.symmetry);
+      prop(undo, 'disabled', !st.canUndo);
+      prop(redo, 'disabled', !st.canRedo);
+      prop(steps, 'textContent', st.steps === 0 ? 'Nessuna modifica' : st.steps === 1 ? '1 modifica' : `${st.steps} modifiche`);
     }
-    repair.disabled = st.steps === 0 || !!s.busy;
-    repair.replaceChildren(s.busy === 'repair' ? icon('spinner', 14) : '', s.busy === 'repair' ? 'Riparo…' : 'Ripara e aggiorna');
-    discard.textContent = st.steps > 0 ? 'Esci senza salvare' : 'Esci';
+    prop(repair, 'disabled', st.steps === 0 || !!s.busy);
+    const repairing = s.busy === 'repair';
+    repairView([repairing], () => repair.replaceChildren(repairing ? icon('spinner', 14) : '', repairing ? 'Riparo…' : 'Ripara e aggiorna'));
+    prop(discard, 'textContent', st.steps > 0 ? 'Esci senza salvare' : 'Esci');
     prev = s;
   };
   app.store.subscribe(update);

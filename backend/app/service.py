@@ -47,12 +47,15 @@ def public_model(meta: dict[str, Any]) -> dict[str, Any]:
     out = {k: v for k, v in meta.items() if not k.startswith("_")}
     if "settings" in out:
         out["settings"] = _settings_now(out["settings"])
+    # Every finalize (a new model, "Applica") rewrites the mesh and the thumbnail and bumps
+    # updated_at: the version in their URLs makes a page that already shows them fetch again.
+    version = int(meta.get("updated_at", 0))
     return {
         **out,
         "urls": {
-            "mesh": f"{base}/mesh.glb?v={int(meta.get('updated_at', 0))}",
+            "mesh": f"{base}/mesh.glb?v={version}",
             "image": f"{base}/image.png" if meta.get("has_image") else None,
-            "thumb": f"{base}/thumb.png",
+            "thumb": f"{base}/thumb.png?v={version}",
             "export": {f: f"/api/export/{mid}?format={f}" for f in ("stl", "3mf", "obj", "glb")},
         },
     }

@@ -5,16 +5,19 @@ from __future__ import annotations
 import io
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
 import trimesh
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, UnidentifiedImageError
+from starlette.middleware.gzip import DEFAULT_EXCLUDED_CONTENT_TYPES, GZipMiddleware
+from starlette.types import Scope
 
 from . import __version__
 from .config import Settings, get_settings
@@ -29,6 +32,40 @@ from .storage import DraftStore, ModelStore
 log = logging.getLogger("forma")
 MAX_UPLOAD = 40 * 1024 * 1024
 MESH_TYPES = {"stl", "obj", "ply", "glb", "gltf", "off", "3mf"}
+
+# Cache-Control for files whose name changes with their content (the frontend's build output).
+IMMUTABLE = "public, max-age=31536000, immutable"
+# For URLs whose content can change (index.html after a new build, a thumbnail after
+# "Applica"): the browser asks every time, an unchanged file costs a 304 and no body.
+REVALIDATE = "no-cache"
+# Compressed: JSON, JS, CSS, HTML, SVG. Not meshes: GLB and STL shrink by about half but cost
+# hundreds of ms of CPU per request (a loss on localhost), 3MF is a zip already.
+GZIP_EXCLUDED = (*DEFAULT_EXCLUDED_CONTENT_TYPES, "model/*")
+
+
+class FrontendFiles(StaticFiles):
+    """The built frontend. Vite names every file under assets/ after its content, so those
+    are kept for a year; the rest (index.html first) is revalidated, so a new build shows at once."""
+
+    def file_response(
+        self,
+        full_path: str | os.PathLike[str],
+        stat_result: os.stat_result,
+        scope: Scope,
+        status_code: int = 200,
+    ) -> Response:
+        response = super().file_response(full_path, stat_result, scope, status_code)
+        hashed = Path(self.get_path(scope)).parts[:1] == ("assets",)
+        response.headers["Cache-Control"] = IMMUTABLE if hashed else REVALIDATE
+        return response
+
+
+def _not_modified(request: Request, etag: str) -> Response | None:
+    """A 304 when the browser already holds this version (its If-None-Match lists ``etag``)."""
+    tags = request.headers.get("if-none-match")
+    if tags and (tags.strip() == "*" or etag in (t.strip().removeprefix("W/") for t in tags.split(","))):
+        return Response(status_code=304, headers={"ETag": etag, "Cache-Control": REVALIDATE})
+    return None
 
 
 def _parse_json(raw: str | None, what: str) -> dict[str, Any]:
@@ -73,6 +110,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_origins=settings.cors_origins or ["*"],
         allow_methods=["*"],
         allow_headers=["*"],
+    )
+    app.add_middleware(
+        GZipMiddleware, minimum_size=1024, compresslevel=6, exclude_content_types=GZIP_EXCLUDED
     )
 
     @app.exception_handler(ProviderError)
@@ -175,7 +215,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"job_id": job.id, "job": job.to_dict()}
 
     @app.get("/api/jobs/{job_id}")
-    def job_status(job_id: str) -> dict[str, Any]:
+    async def job_status(job_id: str) -> dict[str, Any]:
+        # Polled every 700 ms while a job runs; memory only, so it is answered on the event loop
+        # instead of waiting twice for a worker thread (endpoint, then response validation).
         job = jobs.get(job_id)
         if job is None:
             raise HTTPException(404, "Job non trovato")
@@ -292,23 +334,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"ok": True}
 
     @app.get("/api/models/{model_id}/mesh.glb")
-    def model_mesh(model_id: str) -> Response:
+    def model_mesh(model_id: str, request: Request) -> Response:
         """Preview mesh for the viewer: millimetres, Z up (not glTF metres)."""
+        try:
+            st = store.file(model_id, "model.ply").stat()
+        except (KeyError, OSError) as exc:
+            raise HTTPException(404, "Modello non trovato") from exc
+        # The version of model.ply: while it stands, a revalidation is a 304, no PLY load and
+        # no GLB export (the ?v= in the URL only has second resolution, the file's mtime more).
+        etag = f'"glb-{st.st_mtime_ns:x}-{st.st_size:x}"'
+        if cached := _not_modified(request, etag):
+            return cached
         try:
             mesh = store.load_processed(model_id)
         except KeyError as exc:
             raise HTTPException(404, "Modello non trovato") from exc
         return Response(export_glb(mesh, metres=False), media_type="model/gltf-binary",
-                        headers={"Cache-Control": "no-cache"})
+                        headers={"Cache-Control": REVALIDATE, "ETag": etag})
 
     @app.get("/api/models/{model_id}/{name}.png")
-    def model_png(model_id: str, name: str) -> FileResponse:
+    def model_png(model_id: str, name: str, request: Request) -> Response:
         if name not in ("image", "thumb"):
             raise HTTPException(404)
         try:
-            return FileResponse(store.file(model_id, f"{name}.png"), media_type="image/png")
-        except KeyError as exc:
+            path = store.file(model_id, f"{name}.png")
+            st = path.stat()
+        except (KeyError, OSError) as exc:
             raise HTTPException(404, "Immagine non trovata") from exc
+        # "Applica" renders thumb.png again under the same path: revalidate, 304 while unchanged.
+        response = FileResponse(path, media_type="image/png", stat_result=st,
+                                headers={"Cache-Control": REVALIDATE})
+        return _not_modified(request, response.headers["etag"]) or response
 
     # Unknown /api paths are a JSON 404, never the frontend's index.html (registered last,
     # before the static mount, so every real API route above still matches first).
@@ -317,9 +373,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         raise HTTPException(404, "Endpoint inesistente")
 
     # Serve the built frontend (docker / `make serve`) when present.
-    dist = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+    dist = settings.frontend_dist or Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
     if dist.is_dir():
-        app.mount("/", StaticFiles(directory=dist, html=True), name="frontend")
+        app.mount("/", FrontendFiles(directory=dist, html=True), name="frontend")
 
     return app
 

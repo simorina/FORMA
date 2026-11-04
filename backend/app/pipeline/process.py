@@ -15,6 +15,7 @@ from scipy import ndimage
 
 from .fmt import it_num
 from .repair import (
+    DECIMATION_LOCK,
     fill_surface,
     from_manifold,
     grid_to_mesh,
@@ -321,7 +322,8 @@ def decimate(mesh: trimesh.Trimesh, target_faces: int) -> trimesh.Trimesh:
     if len(mesh.faces) <= target_faces:
         return mesh
     try:
-        out = mesh.simplify_quadric_decimation(face_count=target_faces)
+        with DECIMATION_LOCK:
+            out = mesh.simplify_quadric_decimation(face_count=target_faces)
     except Exception:
         return mesh
     out = trimesh.Trimesh(out.vertices, out.faces, process=True)

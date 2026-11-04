@@ -5,7 +5,7 @@
  */
 import type { App, AppState } from '../app';
 import { exportName, type ExportFormat, type Orientation } from '../lib/api';
-import { h, render, svg } from '../lib/dom';
+import { h, memo, prop, render, svg } from '../lib/dom';
 import { FILAMENTS, filamentByKey } from '../lib/filaments';
 import { dims, grams, mm, num } from '../lib/format';
 import { icon } from '../lib/icons';
@@ -95,7 +95,7 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
   const fitLine = h('p', { id: 'fit-line', class: 'fit-line' });
   const fitDims = h('p', { class: 'meta num' });
   const fitAction = h('button', { class: 'btn btn-secondary btn-small', type: 'button' }, 'Adatta al piatto');
-  const orientSeg = h('div', { class: 'segmented', role: 'radiogroup', 'aria-label': 'Orientamento sul piatto' });
+  const orientSeg = h('div', { class: 'segmented segmented-grid', role: 'radiogroup', 'aria-label': 'Orientamento sul piatto' });
 
   const toggle = (label: string, hintText: string, key: 'hollow' | 'base_plate') => {
     const input = h('input', { type: 'checkbox', class: 'switch', role: 'switch', 'aria-label': label }) as HTMLInputElement;
@@ -169,21 +169,25 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
   root.append(h('div', { class: 'panel-head panel-head-print' }, h('span', { class: 'panel-head-title' }, 'Stampa'), sheetClose), printView, editView);
 
   // -- rendering -------------------------------------------------------------------------
+  // Each part redraws only when what it shows changes (typing, polling and sculpting update the
+  // store often); fields the user types in are compared with what they hold, not with the state.
+  const swatchBtns = Array.from(swatches.querySelectorAll<HTMLElement>('.swatch'));
+  const swatchView = memo(), planView = memo(), fitView = memo(), orientView = memo(), applyView = memo();
   let prev: AppState | null = null;
   const update = (s: AppState) => {
     if (prev && prev.edit !== s.edit) root.scrollTop = 0;
-    printView.hidden = s.edit;
-    editView.hidden = !s.edit;
+    prop(printView, 'hidden', s.edit);
+    prop(editView, 'hidden', !s.edit);
     const p = app.printer(s);
     const c = s.current;
-    if (printer.value !== s.printer) printer.value = s.printer;
-    custom.hidden = s.printer !== 'custom';
+    prop(printer, 'value', s.printer);
+    prop(custom, 'hidden', s.printer !== 'custom');
     for (const [el, v] of [[cw, s.custom.w], [cd, s.custom.d], [ch, s.custom.h]] as const) {
-      if (document.activeElement !== el) el.value = String(v);
+      if (document.activeElement !== el) prop(el, 'value', String(v));
     }
     const f = filamentByKey(s.filament);
     const mat = materialByKey(s.material);
-    filamentName.textContent = `${mat.label} ${f.label}`;
+    prop(filamentName, 'textContent', `${mat.label} ${f.label}`);
     if (!prev || prev.material !== s.material) {
       render(materialSeg, MATERIALS.map((m) => h('button', {
         class: 'seg', type: 'button', role: 'radio', 'aria-checked': String(m.key === s.material),
@@ -191,62 +195,69 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
       }, m.label)));
       materialNote.textContent = `${mat.note} Densità ${num(mat.density, 2)} g/cm³.`;
     }
-    if (infill.value !== String(s.infill)) infill.value = String(s.infill);
-    if (spoolSel.value !== String(s.spoolG)) spoolSel.value = String(s.spoolG);
-    if (document.activeElement !== priceInput) priceInput.value = String(app.price(s));
-    swatches.querySelectorAll<HTMLElement>('.swatch').forEach((el) => {
-      const on = el.dataset.key === s.filament;
-      el.setAttribute('aria-checked', String(on));
-      el.tabIndex = on ? 0 : -1;
+    prop(infill, 'value', String(s.infill));
+    prop(spoolSel, 'value', String(s.spoolG));
+    if (document.activeElement !== priceInput) prop(priceInput, 'value', String(app.price(s)));
+    swatchView([s.filament], () => {
+      for (const el of swatchBtns) {
+        const on = el.dataset.key === s.filament;
+        el.setAttribute('aria-checked', String(on));
+        el.tabIndex = on ? 0 : -1;
+      }
     });
 
     // size: preview the box at the new size before it is applied
     const target = s.settings.target_size_mm;
     // number inputs take a dot decimal; the browser shows it in the user's locale
-    if (document.activeElement !== sizeInput) sizeInput.value = String(Math.round(target * 10) / 10);
-    sizeRange.max = String(Math.max(300, Math.ceil(target)));
-    sizeRange.value = String(target);
+    if (document.activeElement !== sizeInput) prop(sizeInput, 'value', String(Math.round(target * 10) / 10));
+    prop(sizeRange, 'max', String(Math.max(300, Math.ceil(target))));
+    prop(sizeRange, 'value', String(target));
     const base0 = app.size(s);
     const box = base0 ? scaled(base0, target) : null;
     const fit = box ? fitOnBed(box, p) : null;
-    render(bedPlan, planSVG(p.w, p.d, box, fit?.rotated ?? false, fit?.fits ?? true));
+    const rotated = fit?.rotated ?? false, fits = fit?.fits ?? true;
+    planView([p.w, p.d, box?.[0], box?.[1], rotated, fits], () => render(bedPlan, planSVG(p.w, p.d, box, rotated, fits)));
     if (!box || !fit) {
-      fitLine.className = 'fit-line';
-      fitLine.textContent = p.label;
-      fitDims.textContent = `Volume di stampa ${num(p.w)} × ${num(p.d)} × ${num(p.h)} mm`;
-      fitAction.hidden = true;
+      fitView([null, p.label], () => {
+        fitLine.className = 'fit-line';
+        fitLine.textContent = p.label;
+      });
+      prop(fitDims, 'textContent', `Volume di stampa ${num(p.w)} × ${num(p.d)} × ${num(p.h)} mm`);
+      prop(fitAction, 'hidden', true);
     } else {
-      fitLine.className = `fit-line ${fit.fits ? 'is-ok' : 'is-over'}`;
-      fitLine.replaceChildren(icon(fit.fits ? 'check' : 'alert'), fit.fits
-        ? (fit.rotated ? 'Entra girato di 90°' : 'Entra nel piatto')
-        : `Al massimo ${mm(fit.maxSize)} mm`);
-      fitDims.textContent = `${dims(box)} mm su ${num(p.w)} × ${num(p.d)} × ${num(p.h)}`;
-      fitAction.hidden = fit.fits;
+      const verdict = fit.fits ? (fit.rotated ? 'Entra girato di 90°' : 'Entra nel piatto') : `Al massimo ${mm(fit.maxSize)} mm`;
+      fitView([fit.fits, verdict], () => {
+        fitLine.className = `fit-line ${fit.fits ? 'is-ok' : 'is-over'}`;
+        fitLine.replaceChildren(icon(fit.fits ? 'check' : 'alert'), verdict);
+      });
+      prop(fitDims, 'textContent', `${dims(box)} mm su ${num(p.w)} × ${num(p.d)} × ${num(p.h)}`);
+      prop(fitAction, 'hidden', fit.fits);
       fitAction.onclick = () => app.setSetting('target_size_mm', Math.floor(fit.maxSize));
     }
 
-    orientSeg.classList.add('segmented-grid');
-    render(orientSeg, ORIENTATIONS.map((o) => h('button', {
+    orientView([s.settings.orientation], () => render(orientSeg, ORIENTATIONS.map((o) => h('button', {
       class: 'seg', type: 'button', role: 'radio', title: o.title, 'aria-checked': String(s.settings.orientation === o.key),
       onclick: () => app.setSetting('orientation', o.key),
-    }, o.label)));
+    }, o.label))));
     const cut = s.settings.flat_bottom_mm ?? 0;
     if (cut > 0) lastFlat = cut;
-    flat.input.checked = cut > 0;
-    flatDepth.row.hidden = cut <= 0;
-    if (document.activeElement !== flatDepth.input) flatDepth.input.value = String(cut > 0 ? cut : lastFlat);
-    hollow.input.checked = s.settings.hollow;
-    wall.row.hidden = !s.settings.hollow;
-    if (document.activeElement !== wall.input) wall.input.value = String(s.settings.wall_mm);
-    base.input.checked = s.settings.base_plate;
-    baseT.row.hidden = !s.settings.base_plate;
-    if (document.activeElement !== baseT.input) baseT.input.value = String(s.settings.base_thickness_mm);
+    prop(flat.input, 'checked', cut > 0);
+    prop(flatDepth.row, 'hidden', cut <= 0);
+    if (document.activeElement !== flatDepth.input) prop(flatDepth.input, 'value', String(cut > 0 ? cut : lastFlat));
+    prop(hollow.input, 'checked', s.settings.hollow);
+    prop(wall.row, 'hidden', !s.settings.hollow);
+    if (document.activeElement !== wall.input) prop(wall.input, 'value', String(s.settings.wall_mm));
+    prop(base.input, 'checked', s.settings.base_plate);
+    prop(baseT.row, 'hidden', !s.settings.base_plate);
+    if (document.activeElement !== baseT.input) prop(baseT.input, 'value', String(s.settings.base_thickness_mm));
     const dirty = app.dirty(s);
-    applyBtn.disabled = !c || !dirty || !!s.busy || app.generating(s);
-    applyBtn.replaceChildren(s.busy === 'apply' ? icon('spinner', 14) : '', s.busy === 'apply' ? 'Preparo…' : 'Applica');
-    applyNote.textContent = !c ? 'Valgono per il prossimo modello.' : dirty ? 'Modifiche da applicare al modello.' : 'Applicate al modello sul piatto.';
+    prop(applyBtn, 'disabled', !c || !dirty || !!s.busy || app.generating(s));
+    const applying = s.busy === 'apply';
+    applyView([applying], () => applyBtn.replaceChildren(applying ? icon('spinner', 14) : '', applying ? 'Preparo…' : 'Applica'));
+    prop(applyNote, 'textContent', !c ? 'Valgono per il prossimo modello.' : dirty ? 'Modifiche da applicare al modello.' : 'Applicate al modello sul piatto.');
 
-    if (!prev || prev.current !== c || prev.filament !== s.filament || prev.shape !== s.shape || prev.printer !== s.printer ||
+    // (the filament is not an input: the spool ring takes its colour from the CSS variable)
+    if (!prev || prev.current !== c || prev.shape !== s.shape || prev.printer !== s.printer ||
       prev.custom !== s.custom || prev.material !== s.material || prev.infill !== s.infill || prev.spoolG !== s.spoolG ||
       prev.prices !== s.prices) {
       renderReport(s);
@@ -254,14 +265,17 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
     prev = s;
   };
 
+  // the report's parts are keyed on the words and figures they show: a sculpt stroke that
+  // leaves them as they are redraws nothing (and an open "Riparazioni" stays open)
+  const spoolView = memo(), kvView = memo(), notesView = memo(), formatsView = memo(), fileView = memo();
   const renderReport = (s: AppState) => {
     const c = s.current;
     if (!c) {
-      render(spool, h('p', { class: 'empty' }, 'Appare quando c’è un modello sul piatto: grammi di filamento, misure, sbalzi e riparazioni.'));
-      render(kv);
-      render(notes);
-      render(formats);
-      fileName.textContent = 'File 3MF, STL, OBJ o GLB, in millimetri, già riparati e chiusi.';
+      spoolView([null], () => render(spool, h('p', { class: 'empty' }, 'Appare quando c’è un modello sul piatto: grammi di filamento, misure, sbalzi e riparazioni.')));
+      kvView([null], () => render(kv));
+      notesView([null], () => render(notes));
+      formatsView([null], () => render(formats));
+      fileView([null], () => { fileName.textContent = 'File 3MF, STL, OBJ o GLB, in millimetri, già riparati e chiusi.'; });
       return;
     }
     const r = c.report;
@@ -269,17 +283,20 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
     const g = est.grams;
     const mat = materialByKey(s.material);
     const frac = Math.min(1, g / s.spoolG);
-    render(spool,
+    const figure = grams(g);
+    const of = `di una bobina da ${spoolLabel(s.spoolG)} di ${mat.label}${est.prints > 1 ? `: ne stampi ${num(est.prints)}` : est.prints === 0 ? ': non basta' : ''}`;
+    const metres = `≈ ${num(est.metres, 1)} m`, cost = `≈ ${euro(est.cost)}`, time = `≈ ${duration(est.minutes)}`;
+    spoolView([frac, figure, of, metres, cost, time], () => render(spool,
       spoolSVG(frac),
       h('div', { class: 'spool-text' },
-        h('p', { class: 'spool-figure num' }, h('span', { class: 'spool-grams' }, grams(g)), h('span', { class: 'spool-unit' }, ' g')),
-        h('p', null, `di una bobina da ${spoolLabel(s.spoolG)} di ${mat.label}${est.prints > 1 ? `: ne stampi ${num(est.prints)}` : est.prints === 0 ? ': non basta' : ''}`),
+        h('p', { class: 'spool-figure num' }, h('span', { class: 'spool-grams' }, figure), h('span', { class: 'spool-unit' }, ' g')),
+        h('p', null, of),
         h('dl', { class: 'spool-est num' },
-          h('div', null, h('dt', null, 'Filamento'), h('dd', null, `≈ ${num(est.metres, 1)} m`)),
-          h('div', null, h('dt', null, 'Costo'), h('dd', null, `≈ ${euro(est.cost)}`)),
-          h('div', null, h('dt', null, 'Tempo'), h('dd', null, `≈ ${duration(est.minutes)}`)))));
+          h('div', null, h('dt', null, 'Filamento'), h('dd', null, metres)),
+          h('div', null, h('dt', null, 'Costo'), h('dd', null, cost)),
+          h('div', null, h('dt', null, 'Tempo'), h('dd', null, time))))));
     const size = app.size(s) ?? r.bbox_mm;
-    const rows: [string, Node | string][] = [
+    const rows: [string, string][] = [
       ['Misure', `${dims(size)} mm`],
       ['Volume', `${num(r.volume_cm3, 1)} cm³ · pieno ${grams(est.solidGrams)} g`],
       ['Mesh', r.watertight ? 'Chiusa e valida' : 'Aperta'],
@@ -292,24 +309,27 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
       ['Copie per piatto', est.copies > 0 ? num(est.copies) : '—'],
       ['Triangoli', num(r.triangles)],
     ];
-    render(kv, rows.map(([k, v]) => h('div', { class: 'kv-row' }, h('dt', null, k), h('dd', { class: 'num' }, v))));
-    const warn = r.warnings.map((w) => h('p', { class: 'note note-warning' }, icon('alert'), w));
-    const repairs = r.repairs.length
-      ? h('details', { class: 'repairs' },
-        h('summary', null, `Riparazioni (${r.repairs.length}) · ${num(r.process_ms / 1000, 1)} s`),
-        h('ul', null, r.repairs.map((x) => h('li', null, x))))
-      : h('p', { class: 'meta' }, `Nessuna riparazione necessaria · ${num(r.process_ms / 1000, 1)} s`);
+    kvView(rows.flat(), () => render(kv, rows.map(([k, v]) => h('div', { class: 'kv-row' }, h('dt', null, k), h('dd', { class: 'num' }, v)))));
     const fb = c.gen_meta?.fallback_from;
-    const time = h('p', { class: 'meta' }, `Tempo e costo sono stime (profilo standard da 0,2 mm, ${Math.round(s.infill * 100)}% di riempimento): lo slicer ti darà quelli esatti.`);
-    render(notes, warn, fb ? h('p', { class: 'note' }, `Generato con ${c.model}: ${fb} non era disponibile.`) : null, repairs, time);
-    render(formats, FORMATS.map((f) => h('a', {
+    notesView([r.warnings.join('\n'), r.repairs.join('\n'), r.process_ms, fb, c.model, s.infill], () => {
+      const warn = r.warnings.map((w) => h('p', { class: 'note note-warning' }, icon('alert'), w));
+      const repairs = r.repairs.length
+        ? h('details', { class: 'repairs' },
+          h('summary', null, `Riparazioni (${r.repairs.length}) · ${num(r.process_ms / 1000, 1)} s`),
+          h('ul', null, r.repairs.map((x) => h('li', null, x))))
+        : h('p', { class: 'meta' }, `Nessuna riparazione necessaria · ${num(r.process_ms / 1000, 1)} s`);
+      const time = h('p', { class: 'meta' }, `Tempo e costo sono stime (profilo standard da 0,2 mm, ${Math.round(s.infill * 100)}% di riempimento): lo slicer ti darà quelli esatti.`);
+      render(notes, warn, fb ? h('p', { class: 'note' }, `Generato con ${c.model}: ${fb} non era disponibile.`) : null, repairs, time);
+    });
+    formatsView(FORMATS.map((f) => c.urls.export[f.key]), () => render(formats, FORMATS.map((f) => h('a', {
       class: f.key === '3mf' ? 'btn btn-secondary is-recommended' : 'btn btn-secondary',
       href: c.urls.export[f.key], download: '', title: f.note,
-    }, f.label)));
-    fileName.replaceChildren(
-      h('span', { class: 'file-slug' }, exportName(c, '3mf')),
+    }, f.label))));
+    const slug = exportName(c, '3mf');
+    fileView([slug], () => fileName.replaceChildren(
+      h('span', { class: 'file-slug' }, slug),
       h('span', null, '3MF consigliato: conserva i millimetri nello slicer.'),
-    );
+    ));
   };
 
   app.store.subscribe(update);

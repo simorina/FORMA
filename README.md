@@ -232,10 +232,17 @@ puntare a un tuo duplicato), cartella dei dati.
 
 ## Qualità
 
-- **Backend**: 101 test pytest (pipeline, provider con client Gradio simulato, API, export).
-- **Frontend**: 75 test vitest (curve di caduta, saldatura, pennelli, undo/redo, STL, contrasto
-  sulla carta, piatto, materiali e stime, passi e geometria della guida).
+- **Backend**: 118 test pytest (pipeline, provider con client Gradio simulato, API, export,
+  compressione e cache HTTP, anteprime).
+- **Frontend**: 87 test vitest (curve di caduta, saldatura, pennelli, undo/redo, STL, contrasto
+  sulla carta, piatto, materiali e stime, passi e geometria della guida, store e DOM).
 - **End-to-end**: 24 flussi in Chromium contro il backend vero (`make e2e`), guida compresa.
+- **Prestazioni** (misurate sulla build): il backend comprime le risposte (three.js da 732 KB a
+  186 KB, la cronologia di 60 modelli da 92 KB a 5 KB) e mette in cache per sempre i file con
+  l'hash nel nome; i caratteri del primo schermo sono precaricati; l'ombra non si ricalcola a ogni
+  fotogramma; l'interfaccia riscrive il DOM solo quando cambia qualcosa (40 lettere nel prompt:
+  da 3.160 a 200 modifiche); le anteprime delle forme offline si disegnano da 3 a 5 volte prima,
+  identiche al pixel.
 - La preparazione di una mesh AI da 327.000 triangoli rumorosa e bucata richiede circa 4 s con le
   impostazioni predefinite e 7 s con svuotamento e base, su una CPU da portatile.
 

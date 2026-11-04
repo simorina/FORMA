@@ -1,7 +1,7 @@
 /** Left panel: the prompt, examples, a photo, the 3D model to use; and the history tab. */
 import type { App, AppState } from '../app';
 import { MESH_EXTENSIONS, type ModelInfo, type ProviderInfo, type Quality } from '../lib/api';
-import { h, render } from '../lib/dom';
+import { attr, h, prop, render } from '../lib/dom';
 import { ago, dims, grams, title } from '../lib/format';
 import { icon } from '../lib/icons';
 
@@ -176,7 +176,7 @@ export function mountLeftPanel(root: HTMLElement, app: App): { focusPrompt(): vo
       void app.remove(m);
     });
     return h('li', { class: s.current?.id === m.id ? 'history-row is-current' : 'history-row' },
-      h('button', { class: 'history-open', type: 'button', 'aria-current': s.current?.id === m.id ? 'true' : 'false', onclick: () => { void app.select(m, { reveal: true }); app.store.set({ sheet: null }); } },
+      h('button', { class: 'history-open', type: 'button', 'aria-current': s.current?.id === m.id ? 'true' : 'false', onclick: () => void app.select(m, { reveal: true }, { sheet: null }) },
         h('img', { class: 'thumb', src: m.urls.thumb, alt: '', width: 48, height: 48, loading: 'lazy' }),
         h('span', { class: 'history-text' },
           h('span', { class: 'history-no num', 'aria-hidden': 'true' }, `N° ${String(no).padStart(2, '0')}`),
@@ -188,24 +188,25 @@ export function mountLeftPanel(root: HTMLElement, app: App): { focusPrompt(): vo
   let prev: AppState | null = null;
   const update = (s: AppState) => {
     if (!prev || prev.panel !== s.panel) {
-      tabCreate.setAttribute('aria-selected', String(s.panel === 'create'));
-      tabHistory.setAttribute('aria-selected', String(s.panel === 'history'));
-      viewCreate.hidden = s.panel !== 'create';
-      viewHistory.hidden = s.panel !== 'history';
+      attr(tabCreate, 'aria-selected', String(s.panel === 'create'));
+      attr(tabHistory, 'aria-selected', String(s.panel === 'history'));
+      prop(viewCreate, 'hidden', s.panel !== 'create');
+      prop(viewHistory, 'hidden', s.panel !== 'history');
     }
-    if (prompt.value !== s.prompt) prompt.value = s.prompt;
+    prop(prompt, 'value', s.prompt);
     const empty = !s.current && !s.job;
     root.classList.toggle('is-first-run', empty);
-    generate.className = `btn ${s.current ? 'btn-secondary' : 'btn-primary'}`;
+    const working = app.working(s);
+    prop(generate, 'className', `btn ${s.current ? 'btn-secondary' : 'btn-primary'}`);
     // stays enabled with an empty prompt: pressing it explains what is missing
-    generate.disabled = app.working(s) || !!s.offline;
-    generate.textContent = app.working(s) ? 'In corso…' : s.current ? 'Genera di nuovo' : 'Genera';
-    review.checked = s.reviewImage;
-    reviewRow.hidden = !!s.image; // a photo is already the image
-    prompt.placeholder = s.image ? 'Facoltativo: descrivi la foto' : 'Un vaso a spirale con il collo stretto';
+    prop(generate, 'disabled', working || !!s.offline);
+    prop(generate, 'textContent', working ? 'In corso…' : s.current ? 'Genera di nuovo' : 'Genera');
+    prop(review, 'checked', s.reviewImage);
+    prop(reviewRow, 'hidden', !!s.image); // a photo is already the image
+    prop(prompt, 'placeholder', s.image ? 'Facoltativo: descrivi la foto' : 'Un vaso a spirale con il collo stretto');
 
     if (!prev || prev.imageUrl !== s.imageUrl) {
-      drop.hidden = !!s.image;
+      prop(drop, 'hidden', !!s.image);
       render(photo, s.image && s.imageUrl
         ? h('div', { class: 'photo-chip' },
           h('img', { src: s.imageUrl, alt: 'Foto scelta', width: 56, height: 56 }),
@@ -229,7 +230,7 @@ export function mountLeftPanel(root: HTMLElement, app: App): { focusPrompt(): vo
       segmented(qualitySeg, QUALITIES, s.quality, (q) => app.setQuality(q));
     }
     if (!prev || prev.history !== s.history || prev.current !== s.current || prev.historyLoaded !== s.historyLoaded) {
-      historyCount.textContent = s.history.length === 1 ? '1 modello' : `${s.history.length} modelli`;
+      prop(historyCount, 'textContent', s.history.length === 1 ? '1 modello' : `${s.history.length} modelli`);
       render(historyList, s.history.length
         ? s.history.map((m, i) => historyRow(m, s, s.history.length - i))
         : h('li', { class: 'empty' }, s.historyLoaded

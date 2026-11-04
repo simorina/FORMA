@@ -6,7 +6,7 @@
  * tour ends, panels, sheets and edit mode go back as they were.
  */
 import type { App, AppState, Panel, Sheet } from '../app';
-import { h, reducedMotion } from '../lib/dom';
+import { h, prop, reducedMotion } from '../lib/dom';
 import { icon } from '../lib/icons';
 import { TOUR_STEPS, intersect, placeCard, roman, union, type Rect } from '../lib/tour';
 
@@ -84,7 +84,7 @@ export function mountTour(host: HTMLElement, app: App): void {
       bottom: n ? document.querySelector('.tabbar')?.getBoundingClientRect().height ?? 0 : 0,
     });
     card.style.transform = `translate(${Math.round(p.x)}px, ${Math.round(p.y)}px)`;
-    card.dataset.side = p.side;
+    prop(card.dataset, 'side', p.side); // (measured on every frame while it follows: write a change only)
     // opening: the first placement is not animated (the card would fly in from the corner)
     if (root.classList.contains('is-placing')) requestAnimationFrame(() => root.classList.remove('is-placing'));
   };

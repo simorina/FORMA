@@ -49,10 +49,40 @@ export function append(parent: Node, children: Child[]): void {
   }
 }
 
-/** Replace all children. */
+/** Replace all children, in one mutation. */
 export function render(parent: Element, ...children: Child[]): void {
-  parent.replaceChildren();
-  append(parent, children);
+  const next = document.createDocumentFragment();
+  append(next, children);
+  parent.replaceChildren(next);
+}
+
+// UI modules update on every store change: these write only what differs, because an equal
+// write is not free (setAttribute and textContent still queue mutations and restyle, and a
+// rebuilt node loses its focus, its scroll and restarts its animations).
+
+/** Set a property (hidden, disabled, textContent, className, value…) only when it differs. */
+export function prop<E extends object, K extends keyof E>(el: E, key: K, value: E[K]): void {
+  if (el[key] !== value) el[key] = value;
+}
+
+/** Set an attribute only when it differs; null removes it. */
+export function attr(el: Element, name: string, value: string | null): void {
+  if (value === null) el.removeAttribute(name);
+  else if (el.getAttribute(name) !== value) el.setAttribute(name, value);
+}
+
+/**
+ * A part of the UI that redraws only when its inputs change: `const plan = memo();` then, on
+ * each update, `plan([w, d, fits], () => render(bed, drawPlan(w, d, fits)))`. The inputs are
+ * compared one by one with Object.is; the first call always draws.
+ */
+export function memo(): (inputs: readonly unknown[], draw: () => void) => void {
+  let last: readonly unknown[] | null = null;
+  return (inputs, draw) => {
+    if (last && last.length === inputs.length && last.every((v, i) => Object.is(v, inputs[i]))) return;
+    draw();
+    last = inputs;
+  };
 }
 
 /** An SVG element from markup (icons, small drawings). */

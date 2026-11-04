@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import threading
@@ -22,6 +23,9 @@ class ModelStore:
         self.root = Path(root) / "models"
         self.root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        # list(): each meta.json as last read, by model id -> ((mtime_ns, size, inode),
+        # created_at, text). A long history is then not read and parsed again on every call.
+        self._listed: dict[str, tuple[tuple[int, int, int], Any, str]] = {}
 
     @staticmethod
     def new_id() -> str:
@@ -90,16 +94,29 @@ class ModelStore:
         return json.loads(path.read_text(encoding="utf-8"))
 
     def list(self, limit: int = 60) -> list[dict[str, Any]]:
-        items = []
-        for d in self.root.iterdir():
-            meta = d / "meta.json"
-            if d.is_dir() and meta.is_file():
+        """The newest ``limit`` models. Only meta.json files that changed since the last call
+        (write_meta replaces the file: new inode and mtime) are read again; only the models
+        returned are parsed, into fresh dicts."""
+        seen: dict[str, tuple[tuple[int, int, int], Any, str]] = {}
+        with os.scandir(self.root) as entries:
+            for entry in entries:
+                if not entry.is_dir():
+                    continue
+                path = os.path.join(entry.path, "meta.json")
                 try:
-                    items.append(json.loads(meta.read_text(encoding="utf-8")))
+                    st = os.stat(path)
+                    version = (st.st_mtime_ns, st.st_size, st.st_ino)
+                    known = self._listed.get(entry.name)
+                    if known is None or known[0] != version:
+                        with open(path, encoding="utf-8") as fh:
+                            text = fh.read()
+                        known = (version, json.loads(text).get("created_at", 0), text)
                 except (OSError, json.JSONDecodeError):
                     continue
-        items.sort(key=lambda m: m.get("created_at", 0), reverse=True)
-        return items[:limit]
+                seen[entry.name] = known
+        self._listed = seen  # forgets deleted models
+        newest = sorted(seen.values(), key=lambda known: known[1], reverse=True)[:limit]
+        return [json.loads(text) for _, _, text in newest]
 
     def delete(self, model_id: str) -> None:
         with self._lock:
