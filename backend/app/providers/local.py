@@ -30,6 +30,7 @@ from .base import (
     as_single_mesh,
     build_image_prompt,
     load_mesh_file,
+    looks_italian,
 )
 
 HUNYUAN_LICENSE = "Tencent Hunyuan 3D 2.1 Community License (esclusi UE/UK/KR)"
@@ -87,6 +88,7 @@ class LocalProvider(Provider):
         self._flux: Any = None
         self._shape: dict[str, Any] = {}
         self._moge: Any = None
+        self._mt: Any = None  # translation pipeline
 
     def models(self) -> list[ModelInfo]:
         default = self.settings.local_shape_model
@@ -203,6 +205,22 @@ class LocalProvider(Provider):
             glb.export(path)
             return load_mesh_file(str(path))
 
+    def english(self, prompt: str) -> str:
+        """Italian -> English for FLUX with a small MarianMT model on the CPU (lazy, cached);
+        the original prompt on any failure."""
+        text = prompt.strip()
+        model = self.settings.hf_translate_model
+        if not text or not model or not looks_italian(text):
+            return text
+        try:
+            if self._mt is None:
+                from transformers import pipeline  # type: ignore
+
+                self._mt = pipeline("translation", model=model, device=-1)
+            return (self._mt(text)[0]["translation_text"] or "").strip() or text
+        except Exception:
+            return text
+
     def _flux_image(self, prompt: str, seed: int, progress: ProgressFn):
         import torch
 
@@ -211,7 +229,7 @@ class LocalProvider(Provider):
         progress("image", 0.4, "FLUX.1 crea l'immagine")
         gen = torch.Generator("cpu").manual_seed(int(seed))
         return flux(
-            build_image_prompt(prompt), guidance_scale=0.0, num_inference_steps=4,
+            build_image_prompt(self.english(prompt)), guidance_scale=0.0, num_inference_steps=4,
             width=1024, height=1024, generator=gen,
         ).images[0]
 

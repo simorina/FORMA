@@ -268,6 +268,39 @@ def test_min_supports_never_turns_a_model_for_nothing():
     assert np.allclose(turned.extents, [30, 20, 50])
 
 
+def test_flat_bottom_cuts_a_sphere_to_a_stable_face():
+    from app.pipeline.process import cut_flat_bottom
+    from app.pipeline.report import bed_contact_cm2
+
+    ball = trimesh.creation.icosphere(subdivisions=4)
+    ball.apply_scale(25)  # 50 mm, resting on a point
+    assert bed_contact_cm2(process_mesh(ball, PrintSettings(target_size_mm=50)).mesh) < 0.5
+    res = process_mesh(ball, PrintSettings(target_size_mm=50, flat_bottom_mm=4))
+    assert res.mesh.is_watertight
+    assert max(res.report["bbox_mm"]) == pytest.approx(50, abs=0.05)
+    # a 4 mm cap of a 25 mm sphere leaves a disc of radius sqrt(25² - 21²) ≈ 13.6 mm (scaled)
+    assert res.report["bed_contact_cm2"] > 4.0
+    assert any("fondo tagliato" in s for s in res.report["repairs"])
+    assert cut_flat_bottom(ball, 30) is None  # would take more than 40 % of the height
+
+
+def test_thin_parts_are_found_and_thick_ones_are_not():
+    from app.pipeline.repair import from_manifold, to_manifold
+    from app.pipeline.report import thin_parts
+
+    block = trimesh.creation.box((60, 60, 60))
+    fin = trimesh.creation.box((60, 0.5, 30))
+    fin.apply_translation([0, 0, 44.9])  # sticks up from the top face
+    finned = from_manifold(to_manifold(block) + to_manifold(fin))
+    frac, mm = thin_parts(finned)
+    assert frac == pytest.approx(0.14, abs=0.03)  # the fin's share of the surface
+    assert mm == pytest.approx(0.5, abs=0.1)
+    assert thin_parts(block) == (0.0, None)  # edges of thick parts never count
+    assert thin_parts(trimesh.creation.box((60, 1.6, 30)))[0] == 0.0  # 1.6 mm prints fine
+    report = printability_report(finned)
+    assert report["thin_pct"] > 10 and any("Parti sottili" in w for w in report["warnings"])
+
+
 def test_upright_leaves_round_and_steep_shapes_alone():
     _, tilt = level_upright(trimesh.creation.icosphere(subdivisions=3))
     assert tilt == 0

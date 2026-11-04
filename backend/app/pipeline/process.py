@@ -36,6 +36,8 @@ class PrintSettings:
     # "supports": the stable resting face that leaves the least overhang;
     # "flat": largest flat face on the bed; "keep": untouched.
     orientation: str = "upright"
+    # Cut this many mm off the bottom so a rounded AI model gets a flat, stable face (0 = off).
+    flat_bottom_mm: float = 0.0
     hollow: bool = False
     wall_mm: float = 2.0
     base_plate: bool = False
@@ -74,6 +76,7 @@ class PrintSettings:
             kwargs[key] = value
         s = cls(**kwargs)
         s.target_size_mm = float(np.clip(s.target_size_mm, 5.0, 500.0))
+        s.flat_bottom_mm = float(np.clip(s.flat_bottom_mm, 0.0, 30.0))
         s.wall_mm = float(np.clip(s.wall_mm, 0.8, 20.0))
         s.base_thickness_mm = float(np.clip(s.base_thickness_mm, 0.6, 20.0))
         s.base_margin_mm = float(np.clip(s.base_margin_mm, 0.0, 50.0))
@@ -282,6 +285,20 @@ def hollow(
     return from_manifold(result)
 
 
+def cut_flat_bottom(mesh: trimesh.Trimesh, depth_mm: float, max_share: float = 0.4) -> trimesh.Trimesh | None:
+    """Slice ``depth_mm`` off the bottom (an exact planar cut, closed by manifold3d), so the
+    model rests on a flat face. None when the cut would take more than ``max_share`` of the
+    height or the mesh is not a valid solid."""
+    height = float(mesh.extents[2])
+    if depth_mm <= 0 or depth_mm > max_share * height:
+        return None
+    solid = to_manifold(mesh)
+    if solid is None:
+        return None
+    kept = solid.trim_by_plane((0.0, 0.0, 1.0), float(mesh.bounds[0, 2]) + depth_mm)  # keeps z >= cut
+    return None if kept.is_empty() else from_manifold(kept)
+
+
 def add_base_plate(mesh: trimesh.Trimesh, thickness: float, margin: float) -> trimesh.Trimesh:
     """Rounded plate under the footprint of the lowest part; the model is lifted onto it."""
     verts = mesh.vertices
@@ -357,6 +374,15 @@ def process_mesh(
         if after < before:
             steps.append(f"girato per ridurre i supporti (sbalzi {before * 100:.0f}% → {after * 100:.0f}%)")
     work = scale_to(place_on_bed(work), s.target_size_mm)
+
+    if s.flat_bottom_mm > 0:
+        notify("Base piana", 0.52)
+        cut = cut_flat_bottom(work, s.flat_bottom_mm)
+        if cut is not None:
+            work = scale_to(place_on_bed(cut), s.target_size_mm)
+            steps.append(f"fondo tagliato in piano ({s.flat_bottom_mm:g} mm)")
+        else:
+            steps.append("base piana saltata (taglio troppo alto per questo modello)")
 
     if s.hollow:
         notify("Svuotamento", 0.6)

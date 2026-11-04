@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -21,6 +22,19 @@ PRINTABLE_TEMPLATE = (
 
 def build_image_prompt(prompt: str) -> str:
     return PRINTABLE_TEMPLATE.format(prompt=prompt.strip().rstrip("."))
+
+
+# Short Italian function words and accented vowels: enough to tell an Italian prompt from an
+# English one ("un vaso con il collo stretto" vs "a vase with a narrow neck").
+_ITALIAN = re.compile(
+    r"\b(il|lo|la|gli|le|un|una|uno|con|di|del|dello|della|dei|degli|delle|da|dal|per|che|sul|"
+    r"sulla|nel|nella|tra|fra|e|ed|è)\b|[àèéìòù]",
+    re.IGNORECASE,
+)
+
+
+def looks_italian(text: str) -> bool:
+    return bool(_ITALIAN.search(text or ""))
 
 
 # Callback signature: (stage, progress 0..1, message)
@@ -110,6 +124,10 @@ class Provider(ABC):
         """Only the text->image step, so the user can approve the picture before the
         (slower, quota-hungry) image->3D step."""
         raise ProviderError(f"{self.label} non genera immagini di anteprima.")
+
+    def english(self, prompt: str) -> str:
+        """The prompt as the text->image model will read it (translated when needed)."""
+        return prompt
 
     def info(self) -> dict[str, Any]:
         ok, reason = self.available()

@@ -117,7 +117,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except ProviderError as exc:
             raise HTTPException(502, str(exc)) from exc
         draft_id = drafts.save(img)
+        english = await run_in_threadpool(prov.english, prompt)  # cached by the provider
         return {"draft_id": draft_id, "url": f"/api/drafts/{draft_id}.png", "prompt": prompt,
+                "prompt_en": english if english != prompt else None,
                 "seed": seed, "provider": prov.name}
 
     @app.get("/api/drafts/{draft_id}.png")
@@ -250,7 +252,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except KeyError as exc:
             raise HTTPException(404, "Modello non trovato") from exc
         data, mime, ext = export_mesh(mesh, fmt)
-        stem = _slug(meta.get("prompt") or "forma") + f"-{int(mesh.extents.max())}mm"
+        stem = _slug(meta.get("title") or meta.get("prompt") or "forma") + f"-{int(mesh.extents.max())}mm"
         return Response(
             data,
             media_type=mime,
@@ -267,6 +269,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return public_model(store.read_meta(model_id))
         except KeyError as exc:
             raise HTTPException(404, "Modello non trovato") from exc
+
+    @app.patch("/api/models/{model_id}")
+    async def rename_model(model_id: str, title: str = Form("")) -> dict[str, Any]:
+        """Give a model a name of your own (empty: back to its prompt). Also names the files."""
+        if not store.exists(model_id):
+            raise HTTPException(404, "Modello non trovato")
+        meta = store.read_meta(model_id)
+        clean = " ".join(title.split())[:120]
+        if clean:
+            meta["title"] = clean
+        else:
+            meta.pop("title", None)
+        # touch=False keeps updated_at: the mesh did not change, its cached GLB stays valid
+        return public_model(store.write_meta(model_id, meta, touch=False))
 
     @app.delete("/api/models/{model_id}")
     def delete_model(model_id: str) -> dict[str, Any]:

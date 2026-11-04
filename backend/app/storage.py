@@ -72,8 +72,11 @@ class ModelStore:
         return path
 
     # -- metadata -------------------------------------------------------------
-    def write_meta(self, model_id: str, meta: dict[str, Any]) -> dict[str, Any]:
-        meta = {**meta, "id": model_id, "updated_at": time.time()}
+    def write_meta(self, model_id: str, meta: dict[str, Any], touch: bool = True) -> dict[str, Any]:
+        """``touch`` bumps updated_at (it versions the mesh URL): off for name-only edits."""
+        meta = {**meta, "id": model_id}
+        if touch or "updated_at" not in meta:
+            meta["updated_at"] = time.time()
         meta.setdefault("created_at", meta["updated_at"])
         tmp = self.path(model_id) / "meta.json.tmp"
         tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")

@@ -54,6 +54,8 @@ class Settings:
     hf_fallback_model: str = "trellis2"
     hf_space_flux: str = "black-forest-labs/FLUX.1-schnell"
     hf_flux_model: str = "black-forest-labs/FLUX.1-schnell"
+    # FLUX's T5 text encoder is English-only: Italian prompts are translated first ("" = off).
+    hf_translate_model: str = "Helsinki-NLP/opus-mt-it-en"
     hf_space_pixal3d: str = "TencentARC/Pixal3D"
     hf_space_trellis2: str = "microsoft/TRELLIS.2"
     hf_space_hunyuan21: str = "tencent/Hunyuan3D-2.1"
@@ -81,6 +83,7 @@ class Settings:
             hf_fallback_model=_optional(_env("HF_FALLBACK_MODEL", cls.hf_fallback_model)),
             hf_space_flux=_env("HF_SPACE_FLUX", cls.hf_space_flux),
             hf_flux_model=_env("HF_FLUX_MODEL", cls.hf_flux_model),
+            hf_translate_model=_optional(_env("HF_TRANSLATE_MODEL", cls.hf_translate_model)),
             hf_space_pixal3d=_env("HF_SPACE_PIXAL3D", cls.hf_space_pixal3d),
             hf_space_trellis2=_env("HF_SPACE_TRELLIS2", cls.hf_space_trellis2),
             hf_space_hunyuan21=_env("HF_SPACE_HUNYUAN21", cls.hf_space_hunyuan21),

@@ -355,6 +355,50 @@ def test_hf_remote_preview_uses_flux_only(client, remote):
     assert remote[0][2]["seed"] == 5
 
 
+def test_italian_prompts_reach_flux_in_english(client, settings, tmp_path):
+    calls, seen = [], []
+
+    def translator(text):
+        seen.append(text)
+        return "an owl sitting on a branch"
+
+    s = Settings(**{**settings.__dict__, "gen_provider": "hf_remote"})
+    register_provider(HFRemoteProvider(s, client_factory=lambda sp: FakeClient(sp, tmp_path, calls),
+                                       translator=translator))
+    r = client.post("/api/image", data={"prompt": "un gufo seduto su un ramo", "provider": "hf_remote"})
+    assert r.status_code == 200, r.text
+    assert r.json()["prompt_en"] == "an owl sitting on a branch"
+    assert calls[0][2]["prompt"].startswith("an owl sitting on a branch")
+    # cached: the same prompt is not translated twice; English prompts pass through untouched
+    client.post("/api/image", data={"prompt": "un gufo seduto su un ramo", "provider": "hf_remote"})
+    r = client.post("/api/image", data={"prompt": "a robot", "provider": "hf_remote"})
+    assert seen == ["un gufo seduto su un ramo"]
+    assert r.json()["prompt_en"] is None
+
+
+def test_translation_failure_keeps_the_original(settings, tmp_path):
+    def broken(_):
+        raise RuntimeError("model not served")
+
+    s = Settings(**{**settings.__dict__, "gen_provider": "hf_remote"})
+    p = HFRemoteProvider(s, client_factory=lambda sp: FakeClient(sp, tmp_path, []), translator=broken)
+    assert p.english("una tazza con il manico") == "una tazza con il manico"
+    no_token = HFRemoteProvider(s, client_factory=lambda sp: FakeClient(sp, tmp_path, []))
+    assert no_token.english("una tazza") == "una tazza"  # no token: nothing to call
+
+
+def test_rename_model_names_the_files_too(client):
+    job = wait_job(client, client.post("/api/generate", data={"prompt": "cubo"}).json()["job_id"])
+    mid, before = job["result"]["id"], job["result"]["updated_at"]
+    r = client.patch(f"/api/models/{mid}", data={"title": "  Dado   per Luca "})
+    assert r.status_code == 200 and r.json()["title"] == "Dado per Luca"
+    assert r.json()["updated_at"] == before  # the mesh did not change
+    cd = client.get(f"/api/export/{mid}", params={"format": "stl"}).headers["content-disposition"]
+    assert "dado-per-luca-" in cd
+    assert "title" not in client.patch(f"/api/models/{mid}", data={"title": ""}).json()
+    assert client.patch("/api/models/abcdefabcdef", data={"title": "x"}).status_code == 404
+
+
 def test_pixal3d_stage_names_are_italian():
     from app.providers.endpoints.pixal3d import _italian_stage, status_poller
 
