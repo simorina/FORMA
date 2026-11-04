@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Node
+node_modules/
+frontend/dist/
+frontend/test-results/
+frontend/playwright-report/
+
+# App data and secrets
+backend/data/
+data/
+.env
+*.local
+
+# Tooling
+.taste-skill/
+.DS_Store
+.idea/
+.vscode/

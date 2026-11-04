@@ -1,0 +1,127 @@
+"""Provider interface: generate(prompt, image, params) -> mesh."""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import Any
+
+import trimesh
+from PIL import Image
+
+# Prompt template used for every text->image step: we want a single, solid,
+# well-lit object that image->3D models can lift into clean printable geometry.
+PRINTABLE_TEMPLATE = (
+    "{prompt}. A single object, centered, full view, isolated on a plain light grey "
+    "background, solid and printable, matte clay material, soft studio lighting, "
+    "no text, no shadows, no cropping, high detail, product photo"
+)
+
+
+def build_image_prompt(prompt: str) -> str:
+    return PRINTABLE_TEMPLATE.format(prompt=prompt.strip().rstrip("."))
+
+
+# Callback signature: (stage, progress 0..1, message)
+ProgressFn = Callable[[str, float, str], None]
+
+
+def _noop(stage: str, progress: float, message: str) -> None:  # pragma: no cover
+    return None
+
+
+@dataclass
+class GenParams:
+    model: str | None = None  # image->3D model key (e.g. "trellis2")
+    seed: int = 0
+    quality: str = "standard"  # "draft" | "standard" | "high"
+    extra: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> GenParams:
+        data = dict(data or {})
+        known = {k: data.pop(k) for k in ("model", "seed", "quality") if k in data}
+        if "seed" in known:
+            known["seed"] = int(known["seed"])
+        return cls(**known, extra=data)
+
+
+@dataclass
+class GenerationResult:
+    mesh: trimesh.Trimesh
+    image: Image.Image | None = None  # intermediate text->image render (if any)
+    model: str = ""
+    meta: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ModelInfo:
+    key: str
+    label: str
+    description: str
+    license: str
+    default: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return self.__dict__.copy()
+
+
+class ProviderError(RuntimeError):
+    """Raised with a user-facing (Italian) message."""
+
+
+class Provider(ABC):
+    name: str = ""
+    label: str = ""
+    description: str = ""
+
+    @abstractmethod
+    def models(self) -> list[ModelInfo]: ...
+
+    def available(self) -> tuple[bool, str]:
+        """(is_available, reason-if-not)."""
+        return True, ""
+
+    @abstractmethod
+    def generate(
+        self,
+        prompt: str | None,
+        image: Image.Image | None,
+        params: GenParams,
+        progress: ProgressFn = _noop,
+    ) -> GenerationResult: ...
+
+    def info(self) -> dict[str, Any]:
+        ok, reason = self.available()
+        return {
+            "name": self.name,
+            "label": self.label,
+            "description": self.description,
+            "available": ok,
+            "reason": reason,
+            "models": [m.to_dict() for m in self.models()],
+        }
+
+
+def as_single_mesh(obj: Any) -> trimesh.Trimesh:
+    """Flatten a trimesh Scene / list into one Trimesh (geometry only)."""
+    if isinstance(obj, trimesh.Trimesh):
+        return obj
+    if isinstance(obj, trimesh.Scene):
+        meshes = [g for g in obj.dump() if isinstance(g, trimesh.Trimesh)] if hasattr(
+            obj, "dump"
+        ) else []
+        if not meshes:
+            raise ProviderError("Il file 3D ricevuto non contiene geometria.")
+        return trimesh.util.concatenate(meshes)
+    if isinstance(obj, (list, tuple)):
+        return trimesh.util.concatenate([as_single_mesh(o) for o in obj])
+    raise ProviderError(f"Formato mesh non supportato: {type(obj).__name__}")
+
+
+def load_mesh_file(path: str, file_type: str | None = None) -> trimesh.Trimesh:
+    loaded = trimesh.load(path, file_type=file_type, force=None, process=False)
+    mesh = as_single_mesh(loaded)
+    # Strip visuals: we only care about geometry for printing.
+    return trimesh.Trimesh(vertices=mesh.vertices, faces=mesh.faces, process=False)

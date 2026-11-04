@@ -1,0 +1,64 @@
+[project]
+name = "forma-backend"
+version = "0.1.0"
+description = "Forma: text/image -> 3D model -> print-ready mesh (FastAPI backend)"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "python-multipart>=0.0.9",
+    "pydantic>=2.7",
+    "numpy>=1.26",
+    "scipy>=1.12",
+    "trimesh>=4.4",
+    "manifold3d>=3.0",
+    "fast-simplification>=0.1.7",
+    "scikit-image>=0.22",
+    "networkx>=3.2",
+    "lxml>=5.0",
+    "pillow>=10.0",
+    "gradio_client>=1.3",
+    "huggingface_hub>=0.25",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+# Extra repair filters (needs libOpenGL on Linux: apt install libopengl0).
+meshlab = ["pymeshlab>=2023.12"]
+# Local CUDA inference (Linux + NVIDIA GPU). TRELLIS.2 / Hunyuan3D need their
+# own CUDA extensions; see README "Linux con GPU".
+gpu = [
+    "torch>=2.4",
+    "torchvision>=0.19",
+    "diffusers>=0.31",
+    "transformers>=4.45",
+    "accelerate>=0.34",
+    "sentencepiece>=0.2",
+    "rembg>=2.0.57",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["B008", "E501"]
