@@ -8,7 +8,9 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
-const URL = 'http://127.0.0.1:4173/';
+// make e2e passes both (E2E_API, E2E_WEB), so the suite can run beside a dev server
+const URL = process.env.FORMA_URL || 'http://127.0.0.1:4173/';
+const API = process.env.FORMA_API_URL || 'http://127.0.0.1:8000';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const results = [];
 const step = async (name, fn) => {
@@ -22,7 +24,7 @@ const step = async (name, fn) => {
     console.error('Set FORMA_E2E=1 (make e2e does): this suite deletes every model on the server.');
     process.exit(2);
   }
-  const probe = await (await fetch('http://127.0.0.1:8000/api/providers')).json();
+  const probe = await (await fetch(`${API}/api/providers`)).json();
   if (probe.default !== 'procedural') {
     console.error('The backend is not the e2e one (default provider is not procedural): refusing to wipe it.');
     process.exit(2);

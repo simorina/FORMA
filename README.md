@@ -36,6 +36,21 @@ modificabile a mano nel browser.
 - **Esporta** in 3MF (millimetri, consigliato), STL binario, OBJ o GLB (metri, Y in alto),
   con un nome che dice cos'è e quanto è grande: `pedone-degli-scacchi-100mm.3mf`.
 
+## Aspetto
+
+Lo stile si chiama **Atelier**: il lookbook di una maison di moda, su carta avorio.
+
+- **Bodoni Moda** per titoli, cifre grandi e logo: un carattere didone ad alto contrasto, come
+  sulle copertine delle riviste di moda. Più il testo è grande, più i tratti sottili sono fini.
+- **Jost** per etichette in maiuscole spaziate e testo: un sans serif geometrico ispirato al Futura,
+  quello del logo Louis Vuitton. Entrambi sono OFL-1.1, inclusi nell'app con i pacchetti Fontsource.
+- **Carta e inchiostro**: grana appena visibile, filetti al posto dei riquadri, angoli vivi, bottoni
+  neri, oro solo per ornamenti e numerazioni. I dati hanno un solo colore, quello del filamento che
+  scegli: sulla carta è scurito quanto basta per un contrasto di 4,5:1, nel 3D resta vero.
+- **Scena 3D**: fondale da studio avorio, piatto color pietra chiara con un riflesso morbido, come
+  l'acrilico lucido di una foto di prodotto. Attorno, i segni di taglio e di registro di una
+  tipografia.
+
 ## Schermate
 
 | | |
@@ -73,7 +88,11 @@ Altri modi:
 | `make docker` | Immagine CPU con Docker Compose: http://localhost:8000 |
 | `make test` | pytest (backend) e vitest (frontend) |
 | `make e2e` | 23 flussi end-to-end in Chromium su dati temporanei (serve Playwright: `cd frontend && npm i --no-save playwright && npx playwright install chromium`) |
+| `make screenshots` | Rifà le schermate di questo README in `docs/screenshots` (desktop 1440×900, tablet 768×1024, telefono 390×844, a 2×) con `frontend/e2e/screens.cjs`, su dati temporanei e provider offline (serve Playwright, come per `make e2e`) |
 | `make help` | Tutti i comandi |
+
+Per far girare `make e2e` e `make screenshots` accanto a `make dev`, cambia le porte del backend e
+del frontend (predefinite 8000 e 4173): `make e2e E2E_API=8100 E2E_WEB=4273`.
 
 ### Mac senza GPU (predefinito: `hf_remote`)
 
@@ -204,8 +223,8 @@ puntare a un tuo duplicato), cartella dei dati.
 ## Qualità
 
 - **Backend**: 101 test pytest (pipeline, provider con client Gradio simulato, API, export).
-- **Frontend**: 64 test vitest (curve di caduta, saldatura, pennelli, undo/redo, STL, contrasto,
-  piatto, materiali e stime).
+- **Frontend**: 66 test vitest (curve di caduta, saldatura, pennelli, undo/redo, STL, contrasto
+  sulla carta, piatto, materiali e stime).
 - **End-to-end**: 23 flussi in Chromium contro il backend vero (`make e2e`).
 - La preparazione di una mesh AI da 327.000 triangoli rumorosa e bucata richiede circa 4 s con le
   impostazioni predefinite e 7 s con svuotamento e base, su una CPU da portatile.
@@ -228,3 +247,4 @@ Cosa resta da verificare, e come, è in [docs/LAVORO-APERTO.md](docs/LAVORO-APER
 
 Il codice di Forma è sotto licenza MIT. I modelli hanno le loro licenze (tabella sopra); FLUX.1-schnell
 è Apache-2.0.
+I caratteri Bodoni Moda e Jost sono sotto SIL Open Font License 1.1 (OFL-1.1).

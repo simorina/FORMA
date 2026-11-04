@@ -140,6 +140,20 @@ kbd {
     linear-gradient(var(--ink), var(--ink)) calc(100% - var(--frame)) calc(100% - 3px) / 1px var(--mark);
   background-repeat: no-repeat;
 }
+/* registration targets at the middle of the top and bottom margins, the other mark of a proof */
+.workspace::after {
+  --reg: radial-gradient(circle closest-side, transparent 3.6px, var(--ink) 3.6px 4.5px, transparent 4.5px);
+  content: ''; grid-area: 1 / 2; pointer-events: none;
+  background:
+    var(--reg) 50% calc(var(--frame) / 2 - 7px) / 14px 14px,
+    linear-gradient(var(--ink), var(--ink)) 50% calc(var(--frame) / 2 - 1px) / 18px 1px,
+    linear-gradient(var(--ink), var(--ink)) 50% calc(var(--frame) / 2 - 9px) / 1px 18px,
+    var(--reg) 50% calc(100% - var(--frame) / 2 + 7px) / 14px 14px,
+    linear-gradient(var(--ink), var(--ink)) 50% calc(100% - var(--frame) / 2 + 1px) / 18px 1px,
+    linear-gradient(var(--ink), var(--ink)) 50% calc(100% - var(--frame) / 2 + 9px) / 1px 18px;
+  background-repeat: no-repeat;
+  animation: fade 1.2s ease 0.8s both;
+}
 .panel {
   min-height: 0;
   overflow-y: auto;
@@ -548,7 +562,9 @@ kbd {
 .bar-fill { position: absolute; top: 0; bottom: 0; left: 0; background: var(--data); transition: width 0.6s var(--ease); }
 .bar-value { position: absolute; top: 50%; right: -50px; width: 42px; transform: translateY(-50%); text-align: right; font-size: 12px; color: var(--muted); }
 
-.toasts { position: absolute; top: 14px; left: 50%; z-index: 10; display: grid; gap: 8px; justify-items: center; width: min(500px, calc(100% - 140px)); transform: translateX(-50%); pointer-events: none; }
+/* notices at the top left, clear of the view tools; under the sculpt hint while editing */
+.toasts { position: absolute; top: 14px; left: 14px; z-index: 10; display: grid; gap: 8px; justify-items: start; width: min(460px, calc(100% - 236px)); pointer-events: none; }
+.is-editing .toasts { top: 58px; }
 .toast {
   display: flex; align-items: center; gap: 12px; max-width: 100%; padding: 9px 9px 9px 16px;
   background: var(--ink); border-radius: 0; color: var(--paper-hi); font-size: 14px; line-height: 20px;
@@ -686,6 +702,7 @@ kbd {
   .workspace { grid-template-columns: minmax(0, 1fr); }
   .workspace::before { grid-area: 1 / 1; background-position: 2px var(--frame), var(--frame) 2px, calc(100% - 2px) var(--frame), calc(100% - var(--frame)) 2px, 2px calc(100% - var(--frame)), var(--frame) calc(100% - 2px), calc(100% - 2px) calc(100% - var(--frame)), calc(100% - var(--frame)) calc(100% - 2px); }
   .viewport { grid-area: 1 / 1; }
+  .workspace::after { display: none; }
   .panel-left, .panel-right {
     position: fixed; left: 0; right: 0; bottom: calc(57px + env(safe-area-inset-bottom)); z-index: 20;
     max-height: min(78dvh, 720px); border: 0; border-top: 1px solid var(--rule-strong); background: var(--grain) var(--paper);
@@ -708,13 +725,20 @@ kbd {
   .is-first-run .prompt-input { min-height: 120px; }
   .history-delete { width: 42px; height: 42px; }
   .seg { height: 40px; }
-  .toasts { width: calc(100% - 32px); top: auto; bottom: 14px; }
+  .toasts { left: 50%; width: calc(100% - 32px); top: auto; bottom: 14px; justify-items: center; transform: translateX(-50%); }
+  .is-editing .toasts { top: auto; bottom: 64px; }
   .preset { height: 36px; padding: 0 12px; }
   .sculpt-hint { top: auto; bottom: 14px; max-width: calc(100% - 28px); }
   body.has-sheet .toasts { bottom: auto; top: 14px; }
 }
 
 @media (max-width: 640px) {
+  /* the object's name gets the whole width, its status underneath like a caption */
+  .object { flex-direction: column; align-items: flex-start; justify-content: center; gap: 1px; }
+  .object-name { max-width: 100%; }
+  .object-name-btn, .object-name-input { height: 24px; }
+  .object .pill { height: 14px; padding: 0; border: 0; font-size: 9px; letter-spacing: 0.14em; gap: 6px; }
+  body.has-sheet .stage-empty { visibility: hidden; } /* only a sliver of the viewport shows */
   .draft { flex-direction: column; align-items: stretch; gap: 16px; top: auto; bottom: 12px; transform: translateX(-50%); width: calc(100% - 24px); padding: 14px; }
   .draft-media { width: 100%; max-height: 40dvh; }
   .draft-body .stage-title { font-size: 26px; line-height: 30px; }
@@ -724,7 +748,7 @@ kbd {
 
 @media (max-width: 480px) {
   .progress { flex-direction: column; align-items: stretch; }
-  .progress-image { grid-template-columns: 56px 1fr; align-items: center; }
+  .progress-image { grid-template-columns: 56px 1fr; align-items: center; width: auto; }
   .progress-image img { width: 56px; height: 56px; }
   .stages { gap: 6px 12px; }
   .stage-empty p.meta { display: none; }

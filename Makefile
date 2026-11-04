@@ -1,5 +1,5 @@
 # Forma — comandi di sviluppo. `make help` per l'elenco.
-.PHONY: help install install-gpu dev offline backend frontend test e2e lint build serve docker docker-gpu clean
+.PHONY: help install install-gpu dev offline backend frontend test e2e screenshots lint build serve docker docker-gpu clean
 
 PORT ?= 8000
 
@@ -32,13 +32,22 @@ test: ## pytest + vitest
 	cd backend && uv run pytest
 	cd frontend && npm test
 
+# Porte di backend e anteprima per e2e e screenshots: cambiale per girare accanto a `make dev`
+E2E_API ?= 8000
+E2E_WEB ?= 4173
+E2E_CMD ?= node frontend/e2e/flows.cjs
+
 e2e: build ## flussi end-to-end in Chromium (Playwright) su dati temporanei e provider offline
 	@data=$$(mktemp -d); \
-	(cd backend && GEN_PROVIDER=procedural DATA_DIR="$$data" exec uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 >/dev/null 2>&1) & api=$$!; \
-	(cd frontend && exec node node_modules/vite/bin/vite.js preview --host 127.0.0.1 >/dev/null 2>&1) & web=$$!; \
-	for i in $$(seq 1 60); do curl -sf http://127.0.0.1:8000/api/health >/dev/null && curl -sf http://127.0.0.1:4173/ >/dev/null && break; sleep 0.5; done; \
-	FORMA_E2E=1 node frontend/e2e/flows.cjs; status=$$?; \
+	(cd backend && GEN_PROVIDER=procedural DATA_DIR="$$data" exec uv run uvicorn app.main:app --host 127.0.0.1 --port $(E2E_API) >/dev/null 2>&1) & api=$$!; \
+	(cd frontend && FORMA_API_URL=http://127.0.0.1:$(E2E_API) exec node node_modules/vite/bin/vite.js preview --host 127.0.0.1 --port $(E2E_WEB) >/dev/null 2>&1) & web=$$!; \
+	for i in $$(seq 1 60); do curl -sf http://127.0.0.1:$(E2E_API)/api/health >/dev/null && curl -sf http://127.0.0.1:$(E2E_WEB)/ >/dev/null && break; sleep 0.5; done; \
+	FORMA_E2E=1 FORMA_URL=http://127.0.0.1:$(E2E_WEB)/ FORMA_API_URL=http://127.0.0.1:$(E2E_API) $(E2E_CMD); status=$$?; \
 	kill $$api $$web 2>/dev/null; wait $$api $$web 2>/dev/null; rm -rf "$$data"; exit $$status
+
+# le schermate del README: lo stesso ambiente dei test e2e, con lo script delle schermate
+screenshots: E2E_CMD = node frontend/e2e/screens.cjs docs/screenshots desktop,tablet,phone 2
+screenshots: e2e ## rifà le schermate del README (docs/screenshots) su dati temporanei
 
 lint: ## ruff + typecheck TypeScript
 	cd backend && uv run ruff check .

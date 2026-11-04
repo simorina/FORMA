@@ -1,7 +1,7 @@
 # Lavoro aperto: cosa manca a Forma e come spendere 100 $
 
 Questo documento è per chi prende in mano il progetto. Tutto il resto (pipeline di stampa,
-interfaccia, modifica a mano, export, test) è fatto e verificato: 101 test pytest, 64 vitest,
+interfaccia, modifica a mano, export, test) è fatto e verificato: 101 test pytest, 66 vitest,
 23 flussi end-to-end (`make test`, `make e2e`). Qui c'è solo ciò che **non è stato possibile
 verificare** nell'ambiente di sviluppo originale, in ordine di priorità.
 
@@ -101,5 +101,6 @@ In ordine di utilità per chi stampa:
 
 - Interfaccia e README in italiano, codice e commenti in inglese.
 - Deve funzionare **anche senza HF_TOKEN** (quota gratuita) e **offline** (`make offline`).
-- Prima di ogni push: `make lint`, `make test`, `make e2e`.
+- Prima di ogni push: `make lint`, `make test`, `make e2e`; se cambi l'interfaccia, anche
+  `make screenshots`.
 - Non scrivere nel README numeri non misurati (tempi, VRAM, quote): meglio dire che mancano.
