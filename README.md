@@ -54,6 +54,10 @@ Lo stile si chiama **Atelier**: il lookbook di una maison di moda, su carta avor
 - **Scena 3D**: fondale da studio avorio, piatto color pietra chiara con un riflesso morbido, come
   l'acrilico lucido di una foto di prodotto. Attorno, i segni di taglio e di registro di una
   tipografia.
+- **Movimento**: il modello si stampa strato per strato con una testina di luce; il colore del
+  filamento sfuma, le viste girano con un respiro di camera, le quote si disegnano. Gli indicatori
+  d'inchiostro scivolano tra le scelte, ogni scorciatoia mostra il suo tasto a schermo, la copertina
+  del primo avvio entra come i titoli di un film. Con "riduci movimento" del sistema tutto si ferma.
 
 ## Schermate
 
@@ -234,8 +238,8 @@ puntare a un tuo duplicato), cartella dei dati.
 
 - **Backend**: 118 test pytest (pipeline, provider con client Gradio simulato, API, export,
   compressione e cache HTTP, anteprime).
-- **Frontend**: 87 test vitest (curve di caduta, saldatura, pennelli, undo/redo, STL, contrasto
-  sulla carta, piatto, materiali e stime, passi e geometria della guida, store e DOM).
+- **Frontend**: 110 test vitest (curve di caduta, saldatura, pennelli, undo/redo, STL, contrasto
+  sulla carta, piatto, materiali e stime, passi e geometria della guida, store e DOM, movimento, tasti a schermo, curve della scena).
 - **End-to-end**: 24 flussi in Chromium contro il backend vero (`make e2e`), guida compresa.
 - **Prestazioni** (misurate sulla build): il backend comprime le risposte (three.js da 732 KB a
   186 KB, la cronologia di 60 modelli da 92 KB a 5 KB) e mette in cache per sempre i file con

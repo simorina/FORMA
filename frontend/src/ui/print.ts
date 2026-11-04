@@ -2,14 +2,20 @@
  * Right panel: printer and filament, size with the bed-fit check, preparation settings,
  * the printability report led by the filament spool, and export. In edit mode it holds
  * the sculpting tools instead.
+ *
+ * It also holds the panels' motion (exported for create.ts, edit.ts and topbar.ts; the pieces
+ * it moves are in panels.css): it only ever plays on top of a state already written, so text,
+ * `hidden`, aria-* and classes change exactly when they did without it.
  */
+import '../styles/panels.css';
 import type { App, AppState } from '../app';
 import { exportName, type ExportFormat, type Orientation } from '../lib/api';
-import { h, memo, prop, render, svg } from '../lib/dom';
+import { attr, h, memo, prop, render, svg } from '../lib/dom';
 import { FILAMENTS, filamentByKey } from '../lib/filaments';
 import { dims, grams, mm, num } from '../lib/format';
 import { icon } from '../lib/icons';
 import { INFILLS, MATERIALS, SPOOLS, duration, euro, materialByKey } from '../lib/materials';
+import { DUR, EASE, canAnimate, enter, play, stagger } from '../lib/motion';
 import { PRINTERS, fitOnBed, scaled } from '../lib/printers';
 import { mountEditTools } from './edit';
 
@@ -26,6 +32,135 @@ const FORMATS: { key: ExportFormat; label: string; note: string }[] = [
   { key: 'obj', label: 'OBJ', note: 'millimetri, Z in alto, per la modellazione' },
   { key: 'glb', label: 'GLB', note: 'metri, Y in alto (glTF), per il web e la AR' },
 ];
+
+// -- the panels' motion ------------------------------------------------------------------------
+
+/** On screen: not inside something hidden (a view, a closed tab). */
+export const shown = (el: Element) => el.getClientRects().length > 0;
+
+interface Box { x: number; y: number; w: number; h: number }
+
+/**
+ * A sliding indicator for a group of choices: one aria-hidden element that glides, on transforms,
+ * from the old choice to the new one. `fill` is the ink of a segmented control (panels.css puts
+ * the cells' paper under it and their labels over it), `line` the underline of tabs (it reaches
+ * for the new tab, then lets go of the old one), `ring` the circle around a colour swatch. Call
+ * the returned function after the choice is written (aria-checked…): it measures and glides, or
+ * just places with `animate` false. It places itself again when the group is resized or shown.
+ */
+export function glide(group: HTMLElement, chosen: string, kind: 'fill' | 'line' | 'ring' = 'fill'): (animate?: boolean) => void {
+  const bar = h('span', { class: `glide glide-${kind}`, 'aria-hidden': 'true' });
+  // paper under the chosen cell, at once: the ink glides over paper, never over the hairlines
+  const patch = kind === 'fill' ? h('span', { class: 'glide glide-patch', 'aria-hidden': 'true' }) : null;
+  const parts = patch ? [patch, bar] : [bar];
+  group.classList.add('has-glide');
+  let at: Box | null = null;
+
+  // A box in the group's padding box, where `left: 0; top: 0` puts the indicator. A cell being
+  // scaled (a hovered swatch) is read from its layout, so that the indicator keeps its true size.
+  const boxOf = (el: HTMLElement): Box => {
+    const cs = el === bar ? null : getComputedStyle(el);
+    if (cs && (cs.transform !== 'none' || cs.scale !== 'none' || cs.translate !== 'none')) {
+      return { x: el.offsetLeft, y: el.offsetTop, w: el.offsetWidth, h: el.offsetHeight };
+    }
+    const g = group.getBoundingClientRect(), r = el.getBoundingClientRect();
+    const k = g.width / group.offsetWidth || 1; // an ancestor's scale
+    return { x: (r.left - g.left) / k - group.clientLeft, y: (r.top - g.top) / k - group.clientTop, w: r.width / k, h: r.height / k };
+  };
+  const set = (el: HTMLElement, b: Box) => {
+    el.style.width = `${b.w}px`;
+    if (kind !== 'line') el.style.height = `${b.h}px`;
+    el.style.transform = `translate(${b.x}px, ${kind === 'line' ? 0 : b.y}px)`;
+  };
+
+  const place = (animate = true) => {
+    if (group.firstChild !== parts[0]) group.prepend(...parts); // a render() of the group took them
+    const cell = group.querySelector<HTMLElement>(chosen);
+    if (!cell) {
+      for (const p of parts) p.hidden = true;
+      at = null;
+      return;
+    }
+    if (!shown(group)) return; // in a hidden view: placed when it shows (the observer below)
+    const c = boxOf(cell);
+    const R = 4; // the ring: 3 px off the swatch, 1 px of line, as the outline it replaces
+    const to = kind === 'ring' ? { x: c.x - R, y: c.y - R, w: c.w + 2 * R, h: c.h + 2 * R }
+      : kind === 'line' ? { x: c.x, y: 0, w: c.w - (parseFloat(getComputedStyle(cell).letterSpacing) || 0), h: 1 } // less the tracking after the last letter
+        : c;
+    const from = animate && at && !bar.hidden && canAnimate() ? boxOf(bar) : null;
+    for (const a of bar.getAnimations()) a.cancel();
+    for (const p of parts) {
+      p.hidden = false;
+      set(p, to);
+    }
+    at = to;
+    if (!from || (Math.abs(from.x - to.x) < 0.5 && Math.abs(from.y - to.y) < 0.5 && Math.abs(from.w - to.w) < 0.5)) return;
+    const t = (b: Box) => `translate(${b.x}px, ${kind === 'line' ? 0 : b.y}px) scale(${b.w / to.w}, ${kind === 'line' ? 1 : b.h / to.h})`;
+    if (kind === 'line') {
+      const x0 = Math.min(from.x, to.x), x1 = Math.max(from.x + from.w, to.x + to.w);
+      void play(bar, [
+        { transform: t(from), easing: EASE.inOut },
+        { transform: t({ x: x0, y: 0, w: x1 - x0, h: 1 }), offset: 0.45, easing: EASE.out },
+        { transform: t(to) },
+      ], { duration: DUR.slow, easing: 'linear' });
+    } else {
+      void play(bar, [{ transform: t(from) }, { transform: t(to) }], { duration: DUR.base, easing: EASE.spring });
+    }
+  };
+  new ResizeObserver(() => place(false)).observe(group);
+  return place;
+}
+
+export interface Choice<T extends string> { key: T; label: string; disabled?: boolean; title?: string }
+
+/**
+ * A segmented control whose buttons stay in place: built again only when the items change,
+ * marked (aria-checked) when the choice does, so the labels' colours can turn while the ink
+ * glides under them. Returns the update.
+ */
+export function segmented<T extends string>(el: HTMLElement, set: (v: T) => void): (items: readonly Choice<T>[], value: T, animate: boolean) => void {
+  const built = memo();
+  const slide = glide(el, '.seg[aria-checked="true"]');
+  return (items, value, animate) => {
+    built([items.map((it) => [it.key, it.label, it.disabled ? 1 : 0, it.title ?? ''].join('␟')).join('␞')], () => render(el, items.map((it) =>
+      h('button', {
+        class: 'seg', type: 'button', role: 'radio', 'aria-checked': 'false', 'data-key': it.key,
+        disabled: it.disabled, title: it.title, onclick: () => set(it.key),
+      }, it.label))));
+    for (const b of el.querySelectorAll<HTMLElement>(':scope > .seg')) attr(b, 'aria-checked', String(b.dataset.key === value));
+    slide(animate);
+  };
+}
+
+/** Text rising from behind its own baseline, `from` % of its height (a figure, a name). */
+export function reveal(el: Element, delay = 0, duration: number = DUR.slow, from = 100): Promise<void> {
+  return play(el, [
+    { transform: `translateY(${from}%)`, clipPath: `inset(-0.3em -0.2em ${from}% -0.2em)` },
+    { transform: 'none', clipPath: 'inset(-0.3em -0.2em 0% -0.2em)' },
+  ], { delay, duration, easing: EASE.out, fill: 'backwards' });
+}
+
+/** Words that changed come in: up a little, out of transparency (they are written already). */
+export function swap(el: Element, delay = 0): Promise<void> {
+  return play(el, [{ opacity: 0, transform: 'translateY(0.4em)' }, { opacity: 1, transform: 'none' }],
+    { delay, duration: DUR.short, easing: EASE.out, fill: 'backwards' });
+}
+
+/** A value that changed: an ink underline draws under it and fades (its ::after: `.flash`). */
+export function flash(el: Element, delay = 0): Promise<void> {
+  return play(el, [
+    { transform: 'scaleX(0)', opacity: 1, easing: EASE.out },
+    { transform: 'scaleX(1)', opacity: 1, offset: 0.4, easing: EASE.inOut },
+    { transform: 'scaleX(1)', opacity: 0 },
+  ], { delay, duration: 1200, easing: 'linear', pseudoElement: '::after' });
+}
+
+/** The blocks of a view coming in, one after the other: all settled within ~450 ms. */
+export function riseIn(els: Iterable<Element>, start = 0): Promise<void> {
+  return stagger(els, (el, d) => enter.rise(el, d, 10, 340), 35, 3, start);
+}
+
+// ------------------------------------------------------------------------------------------------
 
 export function mountRightPanel(root: HTMLElement, app: App): void {
   const sheetClose = h('button', { class: 'icon-btn sheet-close', type: 'button', 'aria-label': 'Chiudi', onclick: () => app.store.set({ sheet: null }) }, icon('close'));
@@ -171,13 +306,20 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
   // -- rendering -------------------------------------------------------------------------
   // Each part redraws only when what it shows changes (typing, polling and sculpting update the
   // store often); fields the user types in are compared with what they hold, not with the state.
+  // The choices stay in place and only change their marks: the indicators glide between them.
   const swatchBtns = Array.from(swatches.querySelectorAll<HTMLElement>('.swatch'));
   const swatchView = memo(), planView = memo(), fitView = memo(), orientView = memo(), applyView = memo();
+  const swatchRing = glide(swatches, '.swatch[aria-checked="true"]', 'ring');
+  const material = segmented(materialSeg, (key) => app.setMaterial(key));
+  const orientation = segmented<Orientation>(orientSeg, (key) => app.setSetting('orientation', key));
   let prev: AppState | null = null;
   const update = (s: AppState) => {
+    const live = !!prev; // the first draw is the page itself: nothing comes in
     if (prev && prev.edit !== s.edit) root.scrollTop = 0;
     prop(printView, 'hidden', s.edit);
     prop(editView, 'hidden', !s.edit);
+    // the view that comes in rises, block after block
+    if (prev && prev.edit !== s.edit) void riseIn((s.edit ? editView : printView).querySelectorAll(':scope > .block'));
     const p = app.printer(s);
     const c = s.current;
     prop(printer, 'value', s.printer);
@@ -187,13 +329,15 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
     }
     const f = filamentByKey(s.filament);
     const mat = materialByKey(s.material);
-    prop(filamentName, 'textContent', `${mat.label} ${f.label}`);
+    const filamentText = `${mat.label} ${f.label}`;
+    if (filamentName.textContent !== filamentText) {
+      filamentName.textContent = filamentText;
+      if (live) void swap(filamentName);
+    }
     if (!prev || prev.material !== s.material) {
-      render(materialSeg, MATERIALS.map((m) => h('button', {
-        class: 'seg', type: 'button', role: 'radio', 'aria-checked': String(m.key === s.material),
-        title: m.note, onclick: () => app.setMaterial(m.key),
-      }, m.label)));
+      material(MATERIALS.map((m) => ({ key: m.key, label: m.label, title: m.note })), s.material, live);
       materialNote.textContent = `${mat.note} Densità ${num(mat.density, 2)} g/cm³.`;
+      if (live) void swap(materialNote);
     }
     prop(infill, 'value', String(s.infill));
     prop(spoolSel, 'value', String(s.spoolG));
@@ -204,6 +348,7 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
         el.setAttribute('aria-checked', String(on));
         el.tabIndex = on ? 0 : -1;
       }
+      swatchRing(live);
     });
 
     // size: preview the box at the new size before it is applied
@@ -216,11 +361,13 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
     const box = base0 ? scaled(base0, target) : null;
     const fit = box ? fitOnBed(box, p) : null;
     const rotated = fit?.rotated ?? false, fits = fit?.fits ?? true;
-    planView([p.w, p.d, box?.[0], box?.[1], rotated, fits], () => render(bedPlan, planSVG(p.w, p.d, box, rotated, fits)));
+    planView([p.w, p.d, box?.[0], box?.[1], rotated, fits], () => drawPlan(bedPlan, planSVG(p.w, p.d, box, rotated, fits), live));
+    const actionWasHidden = fitAction.hidden;
     if (!box || !fit) {
       fitView([null, p.label], () => {
         fitLine.className = 'fit-line';
         fitLine.textContent = p.label;
+        if (live) void swap(fitLine);
       });
       prop(fitDims, 'textContent', `Volume di stampa ${num(p.w)} × ${num(p.d)} × ${num(p.h)} mm`);
       prop(fitAction, 'hidden', true);
@@ -229,16 +376,16 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
       fitView([fit.fits, verdict], () => {
         fitLine.className = `fit-line ${fit.fits ? 'is-ok' : 'is-over'}`;
         fitLine.replaceChildren(icon(fit.fits ? 'check' : 'alert'), verdict);
+        if (live) void swap(fitLine);
       });
       prop(fitDims, 'textContent', `${dims(box)} mm su ${num(p.w)} × ${num(p.d)} × ${num(p.h)}`);
       prop(fitAction, 'hidden', fit.fits);
       fitAction.onclick = () => app.setSetting('target_size_mm', Math.floor(fit.maxSize));
     }
+    // (a fade only: a button that moved would make a click wait for it)
+    if (live && actionWasHidden && !fitAction.hidden) void enter.fade(fitAction, 60, DUR.base);
 
-    orientView([s.settings.orientation], () => render(orientSeg, ORIENTATIONS.map((o) => h('button', {
-      class: 'seg', type: 'button', role: 'radio', title: o.title, 'aria-checked': String(s.settings.orientation === o.key),
-      onclick: () => app.setSetting('orientation', o.key),
-    }, o.label))));
+    orientView([s.settings.orientation], () => orientation(ORIENTATIONS, s.settings.orientation, live));
     const cut = s.settings.flat_bottom_mm ?? 0;
     if (cut > 0) lastFlat = cut;
     prop(flat.input, 'checked', cut > 0);
@@ -254,7 +401,11 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
     prop(applyBtn, 'disabled', !c || !dirty || !!s.busy || app.generating(s));
     const applying = s.busy === 'apply';
     applyView([applying], () => applyBtn.replaceChildren(applying ? icon('spinner', 14) : '', applying ? 'Preparo…' : 'Applica'));
-    prop(applyNote, 'textContent', !c ? 'Valgono per il prossimo modello.' : dirty ? 'Modifiche da applicare al modello.' : 'Applicate al modello sul piatto.');
+    const applyText = !c ? 'Valgono per il prossimo modello.' : dirty ? 'Modifiche da applicare al modello.' : 'Applicate al modello sul piatto.';
+    if (applyNote.textContent !== applyText) {
+      applyNote.textContent = applyText;
+      if (live) void swap(applyNote);
+    }
 
     // (the filament is not an input: the spool ring takes its colour from the CSS variable)
     if (!prev || prev.current !== c || prev.shape !== s.shape || prev.printer !== s.printer ||
@@ -265,19 +416,35 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
     prev = s;
   };
 
-  // the report's parts are keyed on the words and figures they show: a sculpt stroke that
-  // leaves them as they are redraws nothing (and an open "Riparazioni" stays open)
+  // The report's parts are keyed on the words and figures they show: a sculpt stroke that
+  // leaves them as they are redraws nothing (and an open "Riparazioni" stays open).
+  // A new model's report draws itself in (the spool's arc, the figure, the rows one by one);
+  // on the same model, the values that changed flash (after Applica, a material, an infill).
   const spoolView = memo(), kvView = memo(), notesView = memo(), formatsView = memo(), fileView = memo();
+  let onScreen: string | null = null; // the model whose report is drawn
+  let lastSpool: { frac: number; values: string[] } | null = null;
+  let lastRows = new Map<string, string>();
   const renderReport = (s: AppState) => {
     const c = s.current;
+    // (in edit mode the report is out of sight: it is drawn, not played)
+    const live = canAnimate() && shown(printView);
     if (!c) {
-      spoolView([null], () => render(spool, h('p', { class: 'empty' }, 'Appare quando c’è un modello sul piatto: grammi di filamento, misure, sbalzi e riparazioni.')));
+      const was = onScreen;
+      onScreen = null;
+      lastSpool = null;
+      lastRows = new Map();
+      spoolView([null], () => {
+        render(spool, h('p', { class: 'empty' }, 'Appare quando c’è un modello sul piatto: grammi di filamento, misure, sbalzi e riparazioni.'));
+        if (live && was) void enter.fade(spool.firstElementChild!, 0, DUR.base);
+      });
       kvView([null], () => render(kv));
       notesView([null], () => render(notes));
       formatsView([null], () => render(formats));
       fileView([null], () => { fileName.textContent = 'File 3MF, STL, OBJ o GLB, in millimetri, già riparati e chiusi.'; });
       return;
     }
+    const fresh = c.id !== onScreen; // a new model's report appears
+    onScreen = c.id;
     const r = c.report;
     const est = app.estimate(s)!;
     const g = est.grams;
@@ -286,15 +453,33 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
     const figure = grams(g);
     const of = `di una bobina da ${spoolLabel(s.spoolG)} di ${mat.label}${est.prints > 1 ? `: ne stampi ${num(est.prints)}` : est.prints === 0 ? ': non basta' : ''}`;
     const metres = `≈ ${num(est.metres, 1)} m`, cost = `≈ ${euro(est.cost)}`, time = `≈ ${duration(est.minutes)}`;
-    spoolView([frac, figure, of, metres, cost, time], () => render(spool,
-      spoolSVG(frac),
-      h('div', { class: 'spool-text' },
-        h('p', { class: 'spool-figure num' }, h('span', { class: 'spool-grams' }, figure), h('span', { class: 'spool-unit' }, ' g')),
-        h('p', null, of),
-        h('dl', { class: 'spool-est num' },
-          h('div', null, h('dt', null, 'Filamento'), h('dd', null, metres)),
-          h('div', null, h('dt', null, 'Costo'), h('dd', null, cost)),
-          h('div', null, h('dt', null, 'Tempo'), h('dd', null, time))))));
+    spoolView([c.id, frac, figure, of, metres, cost, time], () => {
+      const before = fresh ? null : lastSpool;
+      const ring = spoolSVG(frac);
+      const gramsEl = h('span', { class: 'spool-grams flash' }, figure);
+      const figureEl = h('p', { class: 'spool-figure num' }, gramsEl, h('span', { class: 'spool-unit' }, ' g'));
+      const ofEl = h('p', { class: 'spool-of flash' }, of);
+      const est3 = [metres, cost, time].map((v) => h('dd', { class: 'flash' }, v));
+      const estEl = h('dl', { class: 'spool-est num' },
+        h('div', null, h('dt', null, 'Filamento'), est3[0]),
+        h('div', null, h('dt', null, 'Costo'), est3[1]),
+        h('div', null, h('dt', null, 'Tempo'), est3[2]));
+      render(spool, ring, h('div', { class: 'spool-text' }, figureEl, ofEl, estEl));
+      const values = [figure, of, metres, cost, time];
+      lastSpool = { frac, values };
+      if (!live) return;
+      if (!before) {
+        drawSpool(ring, frac);
+        void reveal(figureEl, 60, DUR.slow);
+        void enter.rise(ofEl, 200, 6, DUR.base);
+        void stagger(estEl.children, (el, d) => enter.rise(el, d, 6, DUR.base), 60, 3, 280);
+        return;
+      }
+      sweepSpool(ring, before.frac, frac);
+      const targets = [gramsEl, ofEl, ...est3];
+      let k = 0;
+      values.forEach((v, i) => { if (v !== before.values[i]) void flash(targets[i], 50 * k++); });
+    });
     const size = app.size(s) ?? r.bbox_mm;
     const rows: [string, string][] = [
       ['Misure', `${dims(size)} mm`],
@@ -309,7 +494,23 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
       ['Copie per piatto', est.copies > 0 ? num(est.copies) : '—'],
       ['Triangoli', num(r.triangles)],
     ];
-    kvView(rows.flat(), () => render(kv, rows.map(([k, v]) => h('div', { class: 'kv-row' }, h('dt', null, k), h('dd', { class: 'num' }, v)))));
+    kvView([c.id, ...rows.flat()], () => {
+      const before = fresh ? null : lastRows;
+      render(kv, rows.map(([k, v]) => h('div', { class: 'kv-row' }, h('dt', null, k), h('dd', { class: 'num flash' }, v))));
+      lastRows = new Map(rows);
+      if (!live) return;
+      const els = Array.from(kv.children);
+      if (!before) {
+        void stagger(els, (el, d) => enter.rise(el, d, 8, DUR.base), 30, 10, 180);
+        return;
+      }
+      let k = 0;
+      rows.forEach(([key, v], i) => {
+        const was = before.get(key);
+        if (was === undefined) void enter.rise(els[i], 0, 6, DUR.base); // a row the report did not have
+        else if (was !== v) void flash(els[i].lastElementChild!, 50 * k++);
+      });
+    });
     const fb = c.gen_meta?.fallback_from;
     notesView([r.warnings.join('\n'), r.repairs.join('\n'), r.process_ms, fb, c.model, s.infill], () => {
       const warn = r.warnings.map((w) => h('p', { class: 'note note-warning' }, icon('alert'), w));
@@ -320,29 +521,38 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
         : h('p', { class: 'meta' }, `Nessuna riparazione necessaria · ${num(r.process_ms / 1000, 1)} s`);
       const time = h('p', { class: 'meta' }, `Tempo e costo sono stime (profilo standard da 0,2 mm, ${Math.round(s.infill * 100)}% di riempimento): lo slicer ti darà quelli esatti.`);
       render(notes, warn, fb ? h('p', { class: 'note' }, `Generato con ${c.model}: ${fb} non era disponibile.`) : null, repairs, time);
+      if (live && fresh) void stagger(notes.children, (el, d) => enter.fade(el, d, DUR.base), 50, 4, 420);
     });
-    formatsView(FORMATS.map((f) => c.urls.export[f.key]), () => render(formats, FORMATS.map((f) => h('a', {
-      class: f.key === '3mf' ? 'btn btn-secondary is-recommended' : 'btn btn-secondary',
-      href: c.urls.export[f.key], download: '', title: f.note,
-    }, f.label))));
+    formatsView(FORMATS.map((f) => c.urls.export[f.key]), () => {
+      render(formats, FORMATS.map((f) => h('a', {
+        class: f.key === '3mf' ? 'btn btn-secondary is-recommended' : 'btn btn-secondary',
+        href: c.urls.export[f.key], download: '', title: f.note,
+      }, f.label)));
+      // uncovered from the left: clip only, the links never move under the pointer
+      if (live && fresh) void enter.wipe(formats, 0, 'left', DUR.base);
+    });
     const slug = exportName(c, '3mf');
-    fileView([slug], () => fileName.replaceChildren(
-      h('span', { class: 'file-slug' }, slug),
-      h('span', null, '3MF consigliato: conserva i millimetri nello slicer.'),
-    ));
+    fileView([slug], () => {
+      const slugEl = h('span', { class: 'file-slug' }, slug);
+      fileName.replaceChildren(slugEl, h('span', null, '3MF consigliato: conserva i millimetri nello slicer.'));
+      if (live) void swap(slugEl, fresh ? 160 : 0);
+    });
   };
 
   app.store.subscribe(update);
   update(app.state);
 }
 
+/** The length of the spool's arc for a fraction of the spool: a print of a few grams still shows a mark. */
+const SPOOL_R = 33, SPOOL_C = 2 * Math.PI * SPOOL_R;
+const arcLength = (frac: number) => Math.max(frac > 0 ? 0.012 : 0, frac) * SPOOL_C;
+
 /**
  * The spool drawn like a watch dial: the hairline flange with its hour ticks, the wound
  * filament as a ring with the arc this print takes, in the filament colour, and the hub.
  */
 function spoolSVG(frac: number): SVGSVGElement {
-  const r = 33, c = 2 * Math.PI * r;
-  const used = Math.max(frac > 0 ? 0.012 : 0, frac); // a print of a few grams still shows a mark
+  const r = SPOOL_R, c = SPOOL_C;
   const ticks = Array.from({ length: 12 }, (_, i) => {
     const a = (i / 12) * 2 * Math.PI, long = i % 3 === 0;
     const r0 = long ? 37.5 : 38.6, r1 = 41;
@@ -351,13 +561,54 @@ function spoolSVG(frac: number): SVGSVGElement {
   }).join('');
   return svg(`<svg class="spool-ring" width="92" height="92" viewBox="0 0 92 92" aria-hidden="true">
     <circle cx="46" cy="46" r="44.5" fill="none" stroke="var(--rule-strong)" stroke-width=".75"/>
-    <g stroke="var(--ink)" stroke-width=".9" stroke-linecap="round">${ticks}</g>
+    <g class="spool-ticks" stroke="var(--ink)" stroke-width=".9" stroke-linecap="round">${ticks}</g>
     <circle cx="46" cy="46" r="${r}" fill="none" stroke="var(--paper-lo)" stroke-width="6"/>
-    <circle cx="46" cy="46" r="${r}" fill="none" stroke="var(--data)" stroke-width="6"
-      stroke-dasharray="${(used * c).toFixed(2)} ${c.toFixed(2)}" transform="rotate(-90 46 46)"/>
+    <circle class="spool-arc" cx="46" cy="46" r="${r}" fill="none" stroke="var(--data)" stroke-width="6"
+      stroke-dasharray="${arcLength(frac).toFixed(2)} ${c.toFixed(2)}" transform="rotate(-90 46 46)"/>
     <circle cx="46" cy="46" r="13" fill="none" stroke="var(--rule-strong)" stroke-width=".75"/>
     <circle cx="46" cy="46" r="2.6" fill="var(--ink)"/>
   </svg>`);
+}
+
+/** A new report: the hour ticks come in around the dial, then the arc winds out to its length. */
+function drawSpool(ring: SVGSVGElement, frac: number): void {
+  void stagger(ring.querySelectorAll('.spool-ticks line'), (el, d) => enter.fade(el, d, DUR.base), 28, 12, 0);
+  const arc = ring.querySelector('.spool-arc');
+  const len = arcLength(frac);
+  if (arc && len > 0) void play(arc, [{ strokeDashoffset: len }, { strokeDashoffset: 0 }], { delay: 140, duration: DUR.hero, easing: EASE.inOut, fill: 'backwards' });
+}
+
+/** The same model, a new figure: the arc grows or shrinks from what it showed. */
+function sweepSpool(ring: SVGSVGElement, from: number, to: number): void {
+  const arc = ring.querySelector('.spool-arc');
+  const a = arcLength(from), b = arcLength(to);
+  if (!arc || Math.abs(a - b) < 0.05) return;
+  const dash = (l: number) => `${l.toFixed(2)} ${SPOOL_C.toFixed(2)}`;
+  void play(arc, [{ strokeDasharray: dash(a) }, { strokeDasharray: dash(b) }], { duration: DUR.slow, easing: EASE.inOut });
+}
+
+/**
+ * Put the new plan in: the bed and the footprint scale from what they were to what they are
+ * (from the centre; the outline keeps its hairline), a footprint that was not there lands.
+ */
+function drawPlan(host: HTMLElement, plan: SVGSVGElement, live: boolean): void {
+  const play0 = live && canAnimate() && shown(host);
+  const was = play0 ? {
+    bed: host.querySelector('.plan-bed')?.getBoundingClientRect(),
+    foot: host.querySelector('.plan-foot')?.getBoundingClientRect(),
+  } : null;
+  render(host, plan);
+  if (!was) return;
+  const resize = (el: Element | null, old: DOMRect | undefined) => {
+    if (!el || !old) return;
+    const r = el.getBoundingClientRect();
+    if (r.width < 0.5 || r.height < 0.5 || (Math.abs(r.width - old.width) < 0.25 && Math.abs(r.height - old.height) < 0.25)) return;
+    void play(el, [{ transform: `scale(${old.width / r.width}, ${old.height / r.height})` }, { transform: 'none' }], { duration: DUR.base, easing: EASE.out });
+  };
+  resize(plan.querySelector('.plan-bed'), was.bed);
+  const foot = plan.querySelector('.plan-foot');
+  if (foot && was.foot) resize(foot, was.foot);
+  else if (foot) void play(foot, [{ transform: 'scale(0.2)' }, { transform: 'none' }], { duration: DUR.base, easing: EASE.spring, fill: 'backwards' });
 }
 
 /** Top-down plan of the bed with the model's footprint. */
@@ -369,10 +620,10 @@ function planSVG(w: number, d: number, box: [number, number, number] | null, rot
   let foot = '';
   if (box) {
     const fx = (rotated ? box[1] : box[0]) * k, fy = (rotated ? box[0] : box[1]) * k;
-    foot = `<rect x="${(S - fx) / 2}" y="${(S - fy) / 2}" width="${fx}" height="${fy}" fill="${fits ? 'var(--data)' : 'var(--negative)'}" opacity="${fits ? 0.9 : 0.85}"/>`;
+    foot = `<rect class="plan-foot" x="${(S - fx) / 2}" y="${(S - fy) / 2}" width="${fx}" height="${fy}" fill="${fits ? 'var(--data)' : 'var(--negative)'}" opacity="${fits ? 0.9 : 0.85}"/>`;
   }
   return svg(`<svg width="${S}" height="${S}" viewBox="0 0 ${S} ${S}">
-    <rect x="${ox + 0.5}" y="${oy + 0.5}" width="${bw - 1}" height="${bd - 1}" fill="var(--paper-lo)" stroke="var(--rule-strong)" stroke-width="1"/>
+    <rect class="plan-bed" x="${ox + 0.5}" y="${oy + 0.5}" width="${bw - 1}" height="${bd - 1}" fill="var(--paper-lo)" stroke="var(--rule-strong)" stroke-width="1"/>
     ${foot}
   </svg>`);
 }

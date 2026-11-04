@@ -1,0 +1,62 @@
+/*
+ * The keyboard's echo (src/ui/keys.ts): at the foot of the viewport, the key just pressed in a
+ * small ink keycap (Jost capitals) and what it did on a strip of paper (Bodoni italic), framed
+ * for a moment by crop marks like the viewport itself. keys.ts plays the entries; each chip's
+ * exit is here. Visual only: no pointer events, transform and opacity only.
+ */
+.keys-hud {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; height: 0;
+  pointer-events: none; user-select: none; -webkit-user-select: none;
+}
+/* a place in the stack: 0 is the newest, at the foot; the older ones shift up, smaller and fainter */
+.keys-chip {
+  --keys-slot: 0;
+  position: absolute; left: 50%; bottom: 18px; z-index: calc(3 - var(--keys-slot));
+  translate: -50% calc(var(--keys-slot) * -38px);
+  scale: calc(1 - var(--keys-slot) * 0.05);
+  opacity: calc(1 - var(--keys-slot) * 0.32);
+  transition: translate var(--dur-base) var(--ease-out), scale var(--dur-base) var(--ease-out), opacity var(--dur-base) var(--ease-out);
+}
+.keys-chip.keys-leaving { z-index: 0; }
+.keys-body { position: relative; display: block; }
+.keys-row { display: flex; height: 30px; white-space: nowrap; }
+.keys-caps { display: flex; flex: none; gap: 3px; }
+.keys-cap {
+  display: grid; place-items: center; min-width: 30px; height: 30px; padding: 0 8px;
+  background: var(--ink); color: var(--paper-hi);
+  /* the indent balances the tracking after the last letter */
+  font: 500 11.5px/1 var(--sans); letter-spacing: 0.14em; text-indent: 0.14em; text-transform: uppercase;
+}
+.keys-cap-word { padding: 0 11px; font-size: 9.5px; letter-spacing: 0.22em; text-indent: 0.22em; }
+/* the caption slides out from behind the cap: clipped on its left, top and bottom, free on the right */
+.keys-tail { display: block; clip-path: inset(0 -100vw 0 0); }
+.keys-plate { position: relative; display: flex; align-items: center; height: 100%; padding: 0 15px 0 12px; }
+.keys-ground {
+  position: absolute; inset: 0; transform-origin: 0 50%;
+  background: rgb(251 248 242 / 0.95); border: 1px solid var(--rule-strong); border-left: 0;
+}
+.keys-caption { position: relative; display: flex; align-items: center; gap: 9px; }
+.keys-dot { flex: none; width: 3px; height: 3px; border-radius: 999px; background: var(--gold); }
+.keys-words { position: relative; display: block; }
+.keys-text {
+  display: block; color: var(--ink);
+  font: italic 400 15px/1 var(--serif); letter-spacing: 0.01em; font-variant-numeric: tabular-nums;
+}
+.keys-text-old { position: absolute; left: 0; top: 0; }
+/* crop marks at the corners: a hairline along each edge, 3 px off the corner */
+.keys-mark { --keys-ink: linear-gradient(var(--ink), var(--ink)); position: absolute; width: 10px; height: 10px; opacity: 0; }
+.keys-mark-tl { left: -9px; top: -9px; background: var(--keys-ink) 0 100% / 6px 1px no-repeat, var(--keys-ink) 100% 0 / 1px 6px no-repeat; }
+.keys-mark-tr { right: -9px; top: -9px; background: var(--keys-ink) 100% 100% / 6px 1px no-repeat, var(--keys-ink) 0 0 / 1px 6px no-repeat; }
+.keys-mark-bl { left: -9px; bottom: -9px; background: var(--keys-ink) 0 0 / 6px 1px no-repeat, var(--keys-ink) 100% 100% / 1px 6px no-repeat; }
+.keys-mark-br { right: -9px; bottom: -9px; background: var(--keys-ink) 100% 0 / 6px 1px no-repeat, var(--keys-ink) 0 100% / 1px 6px no-repeat; }
+
+/* the exit: the caption slides back behind the cap, then the chip sinks away */
+.keys-leaving .keys-plate { animation: keys-retract var(--dur-short) var(--ease-in) both; }
+.keys-leaving .keys-body { animation: keys-leave var(--dur-short) var(--ease-in) 90ms both; }
+@keyframes keys-retract { to { transform: translateX(-101%); } }
+@keyframes keys-leave { to { opacity: 0; transform: translateY(5px); } }
+
+/* keys.ts shows nothing under reduced motion; a chip already there when it is turned on goes */
+@media (prefers-reduced-motion: reduce) {
+  .keys-hud { display: none; }
+}

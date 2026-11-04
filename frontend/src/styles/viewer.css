@@ -1,0 +1,30 @@
+/*
+ * Motion of the 3D view's labels (imported by viewer/viewer.ts).
+ *
+ * The dimension labels (viewer/dims.ts) open from their centre and rise into place as their
+ * line draws in, X then Y then Z (the delay comes from --dim-delay); the bed's label
+ * (viewer/bed.ts) settles after a change of printer. The class goes once the entry has played.
+ * CSS2DRenderer places each label with an inline `transform`, which a `transform` keyframe would
+ * override (the label would leave its point): these animate `translate`, opacity and clip-path.
+ */
+.dim-label.is-entering {
+  animation: forma-dim-in var(--dur-base) var(--ease-out) var(--dim-delay, 0ms) both;
+}
+.bed-label.is-entering {
+  animation: forma-bed-label-in var(--dur-base) var(--ease-out) var(--dur-micro) both;
+}
+
+@keyframes forma-dim-in {
+  from { opacity: 0; translate: 0 6px; clip-path: inset(0 50% 0 50%); }
+  60% { opacity: 1; }
+  to { opacity: 1; translate: 0 0; clip-path: inset(0 0 0 0); }
+}
+
+@keyframes forma-bed-label-in {
+  from { opacity: 0; translate: 0 4px; }
+  to { opacity: 1; translate: 0 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dim-label.is-entering, .bed-label.is-entering { animation: none; }
+}

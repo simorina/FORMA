@@ -2,9 +2,17 @@
  * Mouse and touch sculpting on the viewer's mesh: a brush cursor that follows the surface,
  * grab / smooth / inflate strokes with soft selection and X symmetry, undo and redo.
  * The pure maths lives in brushes.ts, mesh.ts and history.ts.
+ *
+ * The brush ring is alive but quiet: it opens when the pointer reaches the model, breathes very
+ * slightly while it rests there (and settles after a few seconds, so an idle view renders
+ * nothing), sinks like a pressed key with a ripple going out when a stroke starts, and glides to
+ * a new radius. The viewer's loop calls tick() each frame; under reduced motion it stays still.
  */
 import * as THREE from 'three';
 import type { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { reducedMotion } from '../lib/dom';
+import { DUR } from '../lib/motion';
+import { Glide, clamp01, easeOut, pressScale } from '../viewer/anim';
 import {
   GrabStroke,
   StrokeRecorder,
@@ -47,6 +55,22 @@ interface Context {
   onShapeChanged(): void;
 }
 
+/** The ring's breath: one slow cycle, and how long it goes on after the pointer stops. */
+const BREATH_PERIOD = 2800;
+const BREATH_FOR = 5000;
+const BREATH_SETTLE = 1200;
+const RIPPLE_MS = 560;
+
+interface Cursor {
+  group: THREE.Group;
+  ripple: THREE.Mesh;
+  ring: THREE.MeshBasicMaterial;
+  disc: THREE.MeshBasicMaterial;
+  dot: THREE.MeshBasicMaterial;
+  wave: THREE.MeshBasicMaterial;
+  opacity: number;
+}
+
 interface Active {
   pointerId: number;
   tool: Tool;
@@ -76,14 +100,28 @@ export class Sculpt {
   private active: Active | null = null;
   private readonly pointers = new Set<number>();
   private readonly raycaster = new THREE.Raycaster();
+  private readonly brushRing: Cursor;
+  private readonly mirrorRing: Cursor;
+  private readonly rings: readonly Cursor[];
   private readonly cursor: THREE.Group;
   private readonly mirrorCursor: THREE.Group;
   private refitPending = false;
+  // the ring's motion (times from performance.now())
+  private readonly shownRadius = new Glide(8);
+  private openedAt = -1e9; // the pointer reached the model: the ring opens, then breathes
+  private movedAt = 0; // the breath settles a while after the pointer stops
+  private pressedAt = -1e9; // a stroke began: the ring sinks, a ripple goes out
+  private pulsedAt = -1e9; // a tool was picked: a ripple
+  private wasMoving = false;
+  private calm = false; // prefers-reduced-motion, read when sculpting starts and at each stroke
 
   constructor(private readonly ctx: Context) {
     (this.raycaster as THREE.Raycaster & { firstHitOnly?: boolean }).firstHitOnly = true;
-    this.cursor = makeCursor();
-    this.mirrorCursor = makeCursor(0.45);
+    this.brushRing = makeCursor();
+    this.mirrorRing = makeCursor(0.45);
+    this.rings = [this.brushRing, this.mirrorRing];
+    this.cursor = this.brushRing.group;
+    this.mirrorCursor = this.mirrorRing.group;
     ctx.scene.add(this.cursor, this.mirrorCursor);
     const dom = ctx.dom;
     // Capture phase: decide before OrbitControls whether this press sculpts or orbits.
@@ -120,6 +158,7 @@ export class Sculpt {
 
   setEnabled(on: boolean): void {
     this.enabled = on;
+    this.calm = reducedMotion();
     if (on && this.mesh && !this.faces) {
       const count = this.positions!.length / 3;
       this.faces = vertexFaces(this.index!, count);
@@ -146,6 +185,10 @@ export class Sculpt {
   }
 
   set(patch: Partial<Pick<SculptState, 'tool' | 'radius' | 'strength' | 'falloff' | 'symmetry'>>): void {
+    if (patch.tool && patch.tool !== this.tool && this.cursor.visible) {
+      this.pulsedAt = performance.now(); // a new tool in hand: the ring answers
+      this.ctx.requestRender();
+    }
     Object.assign(this, patch);
     this.radius = Math.max(0.5, Math.min(this.radius, 500));
     this.strength = Math.max(0.05, Math.min(this.strength, 1));
@@ -184,6 +227,8 @@ export class Sculpt {
     if (!hit) return; // empty space: let OrbitControls orbit
     this.ctx.controls.enabled = false;
     this.ctx.dom.setPointerCapture(e.pointerId);
+    this.calm = reducedMotion();
+    this.pressedAt = performance.now();
     const center = hit.point.clone();
     this.active = { pointerId: e.pointerId, tool: this.tool, sign: e.shiftKey ? -1 : 1, last: center };
     if (this.tool === 'grab') {
@@ -312,13 +357,62 @@ export class Sculpt {
 
   /** Ink on light filaments, white on dark ones: the brush ring must read on the surface. */
   setCursorColor(hex: number): void {
-    for (const g of [this.cursor, this.mirrorCursor]) {
-      g.traverse((o) => {
-        const m = (o as THREE.Mesh).material as THREE.MeshBasicMaterial | undefined;
-        m?.color?.setHex(hex);
-      });
+    for (const c of this.rings) {
+      for (const m of [c.ring, c.disc, c.dot, c.wave]) m.color.setHex(hex);
     }
     this.ctx.requestRender();
+  }
+
+  /**
+   * Animate the brush ring to `now` (the viewer calls this once per frame): its opening, breath,
+   * press, ripple and radius. True while it moves, so the viewer renders a frame.
+   */
+  tick(now: number): boolean {
+    const resized = this.shownRadius.step(now);
+    if (!this.cursor.visible) {
+      this.wasMoving = false;
+      return false;
+    }
+    let moving = resized;
+    let open = 1, press = 1, wave = -1, breathe = 0;
+    if (!this.calm) {
+      const tOpen = (now - this.openedAt) / DUR.micro;
+      if (tOpen < 1) {
+        open = easeOut(clamp01(tOpen));
+        moving = true;
+      }
+      const tPress = (now - this.pressedAt) / DUR.short;
+      if (tPress < 1) {
+        press = pressScale(tPress, 0.9);
+        moving = true;
+      }
+      const tWave = (now - Math.max(this.pressedAt, this.pulsedAt)) / RIPPLE_MS;
+      if (tWave < 1) {
+        wave = clamp01(tWave);
+        moving = true;
+      }
+      // a slow breath while the pointer rests on the model (not while it sculpts), dying away
+      const amp = this.active ? 0 : clamp01(1 - (now - this.movedAt - BREATH_FOR) / BREATH_SETTLE);
+      if (amp > 0) {
+        breathe = amp * Math.sin(((now - this.openedAt) / BREATH_PERIOD) * 2 * Math.PI);
+        moving = true;
+      }
+    }
+    const scale = this.shownRadius.value * (0.86 + 0.14 * open) * press * (1 + 0.014 * breathe);
+    for (const c of this.rings) {
+      c.group.scale.setScalar(scale);
+      c.ring.opacity = c.dot.opacity = c.opacity * open;
+      c.disc.opacity = 0.07 * c.opacity * open * (1 + 0.45 * breathe);
+      c.ripple.visible = wave >= 0;
+      if (wave >= 0) {
+        c.ripple.scale.setScalar(1 + 0.55 * easeOut(wave));
+        c.wave.opacity = 0.5 * c.opacity * (1 - wave) * (1 - wave);
+      }
+    }
+    // one more frame once it stops, to draw it at rest
+    const draw = moving || this.wasMoving;
+    this.wasMoving = moving;
+    return draw;
   }
 
   // -- picking and cursor ----------------------------------------------------------------
@@ -340,6 +434,12 @@ export class Sculpt {
 
   private moveCursor(point: THREE.Vector3, normal: THREE.Vector3 | null): void {
     const up = new THREE.Vector3(0, 0, 1);
+    const now = performance.now();
+    if (!this.cursor.visible) {
+      this.openedAt = now; // the ring opens where the pointer reached the model
+      this.shownRadius.jump(this.radius);
+    }
+    this.movedAt = now;
     this.cursor.position.copy(point);
     if (normal) this.cursor.quaternion.setFromUnitVectors(up, normal);
     this.cursor.visible = true;
@@ -352,9 +452,15 @@ export class Sculpt {
     this.ctx.requestRender();
   }
 
+  /** The ring glides to a new radius ([ and ] or the slider); tick() sets the scale. */
   private updateCursorScale(): void {
-    this.cursor.scale.setScalar(this.radius);
-    this.mirrorCursor.scale.setScalar(this.radius);
+    const glide = this.cursor.visible && !this.calm;
+    this.shownRadius.to(this.radius, performance.now(), glide ? DUR.micro : 0, easeOut);
+    if (!glide) {
+      this.cursor.scale.setScalar(this.radius);
+      this.mirrorCursor.scale.setScalar(this.radius);
+    }
+    this.ctx.requestRender();
   }
 
   private hideCursor(): void {
@@ -368,26 +474,25 @@ export class Sculpt {
   }
 }
 
-/** A ring and a faint disc, unit radius, facing +Z (rotated onto the surface normal). */
-function makeCursor(opacity = 0.95): THREE.Group {
+/**
+ * A ring and a faint disc, unit radius, facing +Z (rotated onto the surface normal), and the
+ * ripple a stroke sends out (hidden until then).
+ */
+function makeCursor(opacity = 0.95): Cursor {
   const g = new THREE.Group();
-  const ring = new THREE.Mesh(
-    new THREE.RingGeometry(0.955, 1, 72),
-    new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity, depthTest: false, side: THREE.DoubleSide }),
-  );
-  const disc = new THREE.Mesh(
-    new THREE.CircleGeometry(1, 72),
-    new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.07 * opacity, depthTest: false, side: THREE.DoubleSide }),
-  );
-  const dot = new THREE.Mesh(
-    new THREE.CircleGeometry(0.035, 16),
-    new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity, depthTest: false, side: THREE.DoubleSide }),
-  );
-  for (const m of [disc, ring, dot]) {
+  const material = (o: number) =>
+    new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: o, depthTest: false, side: THREE.DoubleSide });
+  const ringMat = material(opacity), discMat = material(0.07 * opacity), dotMat = material(opacity), waveMat = material(0);
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.955, 1, 72), ringMat);
+  const disc = new THREE.Mesh(new THREE.CircleGeometry(1, 72), discMat);
+  const dot = new THREE.Mesh(new THREE.CircleGeometry(0.035, 16), dotMat);
+  const ripple = new THREE.Mesh(new THREE.RingGeometry(0.975, 1, 72), waveMat);
+  ripple.visible = false;
+  for (const m of [disc, ring, dot, ripple]) {
     m.renderOrder = 10;
     m.position.z = 0.02;
     g.add(m);
   }
   g.visible = false;
-  return g;
+  return { group: g, ripple, ring: ringMat, disc: discMat, dot: dotMat, wave: waveMat, opacity };
 }

@@ -4,28 +4,39 @@
  * number in Roman numerals, Indietro and Avanti. ← and → move, Esc leaves, Tab stays in the
  * card. Each step first brings its panel forward (a bottom sheet on narrow screens); when the
  * tour ends, panels, sheets and edit mode go back as they were.
+ *
+ * In motion (lib/motion, styles/overlays.css): the highlight morphs from part to part and its
+ * crop marks breathe a few times when it lands; the title and the text turn like a page (forward
+ * one way, back the other); each segment of the progress is drawn as it fills. On leaving, the
+ * card and the dimmed screen fade on ghost copies while the tour itself is hidden at once.
  */
 import type { App, AppState, Panel, Sheet } from '../app';
 import { h, prop, reducedMotion } from '../lib/dom';
 import { icon } from '../lib/icons';
+import { DUR, EASE, canAnimate, ghostOut, play } from '../lib/motion';
 import { TOUR_STEPS, intersect, placeCard, roman, union, type Rect } from '../lib/tour';
 
 const NARROW = 1024; // below this width the panels are bottom sheets (see app.css)
 const PAD = 8; // space between the highlight and what it frames
+/** The crop marks' corners, and the way each one leans out when it breathes. */
+const CORNERS = [['tl', -1, -1], ['tr', 1, -1], ['bl', -1, 1], ['br', 1, 1]] as const;
 
 export function mountTour(host: HTMLElement, app: App): void {
-  const spot = h('div', { class: 'tour-spot', 'aria-hidden': 'true' });
+  const crops = CORNERS.map(([c]) => h('i', { class: `tour-crop tour-crop-${c}` }));
+  const spot = h('div', { class: 'tour-spot', 'aria-hidden': 'true' }, crops);
   const kicker = h('p', { class: 'kicker tour-kicker' });
   const title = h('h2', { class: 'tour-title', id: 'tour-title' });
   const text = h('p', { class: 'tour-text', id: 'tour-text' });
-  const marks = TOUR_STEPS.map(() => h('span'));
+  const inks = TOUR_STEPS.map(() => h('i', { class: 'tour-ink' }));
+  const marks = inks.map((ink) => h('span', null, ink));
   const progress = h('div', { class: 'tour-progress', 'aria-hidden': 'true' }, marks);
   const back = h('button', { class: 'btn btn-ghost tour-back', type: 'button' }, 'Indietro');
   const next = h('button', { class: 'btn btn-primary tour-next', type: 'button' });
   const close = h('button', { class: 'icon-btn tour-close', type: 'button', 'aria-label': 'Esci dalla guida', title: 'Esci dalla guida · Esc' }, icon('close'));
+  const body = h('div', { class: 'tour-body', 'aria-live': 'polite' }, title, text);
   const card = h('div', { class: 'tour-card', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'tour-title', 'aria-describedby': 'tour-text' },
     h('div', { class: 'tour-head' }, kicker, close),
-    h('div', { class: 'tour-body', 'aria-live': 'polite' }, title, text),
+    body,
     progress,
     h('div', { class: 'tour-actions' }, back, next));
   // the scrim takes every click outside the card: the tour is modal
@@ -72,7 +83,8 @@ export function mountTour(host: HTMLElement, app: App): void {
       h: Math.min(view.h, u.y + u.h + PAD) - Math.max(0, u.y - PAD),
     };
     spot.classList.toggle('is-empty', !t);
-    const s = t ?? { x: view.w / 2, y: view.h / 2, w: 0, h: 0 };
+    // (with nothing to frame, a dot under the card in the middle: the dimmed screen can still fade out)
+    const s = t ?? { x: view.w / 2 - 0.5, y: view.h / 2 - 0.5, w: 1, h: 1 };
     spot.style.transform = `translate(${s.x}px, ${s.y}px)`;
     spot.style.width = `${s.w}px`;
     spot.style.height = `${s.h}px`;
@@ -102,8 +114,69 @@ export function mountTour(host: HTMLElement, app: App): void {
   window.addEventListener('resize', () => { if (!root.hidden) track(150); });
   document.addEventListener('scroll', () => { if (!root.hidden) track(150); }, true);
 
+  // -- motion -----------------------------------------------------------------------------------
+  /** The words of the step being left, on a copy that slides away under the column's edge. */
+  let echo: HTMLElement | null = null;
+  const turnOut = (dir: number) => {
+    echo?.remove();
+    echo = null;
+    if (!canAnimate()) return;
+    const lines = [title, text];
+    // (from where the lines are now: a quick reader may leave a step while it still comes in)
+    const now = lines.map((el) => getComputedStyle(el));
+    const copies = lines.map((el) => {
+      const c = el.cloneNode(true) as HTMLElement;
+      c.removeAttribute('id');
+      return c;
+    });
+    const layer = h('div', { class: 'tour-echo', 'aria-hidden': 'true' }, copies);
+    body.append(layer);
+    echo = layer;
+    copies.forEach((c, k) => void play(c, [
+      { opacity: now[k].opacity, transform: now[k].transform },
+      { opacity: 0, transform: `translateX(${-dir * 28}px)` },
+    ], { delay: k * 30, duration: DUR.short, easing: EASE.in, fill: 'both' }));
+    window.setTimeout(() => {
+      layer.remove();
+      if (echo === layer) echo = null;
+    }, DUR.short + 80);
+  };
+  /** The new step's words come in from the side the reader is going to (from below on opening). */
+  const turnIn = (dir: number) => {
+    const from = dir ? `translateX(${dir * 28}px)` : 'translateY(10px)';
+    [title, text].forEach((el, k) => void play(el, [{ opacity: 0, transform: from }, { opacity: 1, transform: 'none' }], {
+      delay: (dir ? 110 : 90) + k * 60, duration: DUR.base, easing: EASE.out, fill: 'backwards',
+    }));
+  };
+  /** A segment of the progress is drawn as the reader reaches it, and drawn back on Indietro. */
+  const drawProgress = (i: number, from: number | null) => {
+    if (from === null || i > from) {
+      void play(inks[i], [{ transform: 'scaleX(0)' }, { transform: 'none' }], {
+        delay: from === null ? 220 : 80, duration: DUR.slow, easing: EASE.out, fill: 'backwards',
+      });
+    } else if (i < from) {
+      void play(inks[from], [{ transform: 'none' }, { transform: 'scaleX(0)' }], { duration: DUR.base, easing: EASE.inOut });
+    }
+  };
+  /** The crop marks close in on opening, then breathe a few times where the highlight lands. */
+  const breathe = (opening: boolean) => {
+    if (!canAnimate()) return;
+    crops.forEach((c, k) => {
+      const [, x, y] = CORNERS[k];
+      for (const a of c.getAnimations()) a.cancel();
+      if (opening) {
+        void play(c, [{ opacity: 0, transform: `translate(${x * 14}px, ${y * 14}px)` }, { opacity: 1, transform: 'none' }], {
+          duration: DUR.slow, easing: EASE.out, fill: 'backwards',
+        });
+      }
+      void play(c, [{ opacity: 1, transform: 'none' }, { opacity: 0.45, transform: `translate(${x * 3}px, ${y * 3}px)` }], {
+        delay: opening ? DUR.slow : 560, duration: 1500, easing: EASE.inOut, iterations: 4, direction: 'alternate',
+      });
+    });
+  };
+
   // -- steps ------------------------------------------------------------------------------------
-  const show = (i: number) => {
+  const show = (i: number, from: number | null) => {
     const step = TOUR_STEPS[i];
     const n = narrow();
     // the print panel is replaced by the sculpting tools in edit mode: leave it (restored at the end)
@@ -113,6 +186,8 @@ export function mountTour(host: HTMLElement, app: App): void {
     const first = step.targets?.[0] ? document.querySelector<HTMLElement>(step.targets[0]) : null;
     if (first && shown(first)) first.scrollIntoView({ block: 'nearest', behavior: reducedMotion() ? 'auto' : 'smooth' });
 
+    const dir = from === null ? 0 : Math.sign(i - from);
+    if (dir) turnOut(dir);
     kicker.textContent = `Guida · ${roman(i + 1)} / ${roman(TOUR_STEPS.length)}`;
     title.textContent = step.title;
     text.textContent = step.text;
@@ -125,6 +200,9 @@ export function mountTour(host: HTMLElement, app: App): void {
     card.dataset.step = step.id;
     track();
     next.focus({ preventScroll: true });
+    turnIn(dir);
+    drawProgress(i, from);
+    breathe(from === null);
   };
 
   let before: { panel: Panel; sheet: Sheet; edit: boolean } | null = null;
@@ -134,8 +212,15 @@ export function mountTour(host: HTMLElement, app: App): void {
     lastFocus = document.activeElement;
     root.classList.add('is-placing');
     root.hidden = false;
+    // (app.css fades the card in; it also rises a little, on `translate`: its place is the transform)
+    void play(card, [{ translate: '0 14px' }, { translate: '0 0' }], { duration: DUR.base, easing: EASE.out });
   };
   const shut = () => {
+    // the card and the dimmed screen leave on copies: the tour itself is hidden at once
+    ghostOut(spot, [{ opacity: 1 }, { opacity: 0 }], { duration: DUR.short, easing: EASE.out });
+    ghostOut(card, [{ opacity: 1, transform: 'none' }, { opacity: 0, transform: 'translateY(10px)' }], { duration: DUR.short });
+    echo?.remove();
+    echo = null;
     root.hidden = true;
     cancelAnimationFrame(raf);
     raf = 0;
@@ -158,7 +243,7 @@ export function mountTour(host: HTMLElement, app: App): void {
     if (s.tour === prev.tour) return;
     if (s.tour === null) return shut();
     if (prev.tour === null) open(prev);
-    show(s.tour);
+    show(s.tour, prev.tour);
   });
 
   document.addEventListener('keydown', (e) => {

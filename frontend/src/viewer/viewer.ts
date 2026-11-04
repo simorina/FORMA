@@ -6,7 +6,15 @@
  *
  * World units are millimetres, Z up: exactly what the backend's mesh.glb preview contains,
  * so an edited mesh can be written back as STL without any conversion.
+ *
+ * Motion (the house's vocabulary, lib/motion.ts, in three.js terms: anim.ts): a new model is
+ * printed up from the bed under a glowing print head; another one rises quicker; the colour of
+ * the filament dissolves, the overhang map and the wireframe fade, the section glides to its
+ * height, the camera moves with a little dolly breath, the bed resizes, the dimension lines draw
+ * in. Every change is instant under prefers-reduced-motion, and nothing renders while idle:
+ * the loop draws a frame only when something moved.
  */
+import '../styles/viewer.css';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
@@ -18,15 +26,14 @@ import { Sculpt, type SculptState } from '../edit/sculpt';
 import { writeSTL } from '../edit/stl';
 import type { Printer } from '../lib/printers';
 import { reducedMotion } from '../lib/dom';
+import { DUR } from '../lib/motion';
+import { Glide, breath, easeInOut, easeOut, easeSteady, type Ease } from './anim';
 import { Bed } from './bed';
 import { Dimensions } from './dims';
 
 THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
 THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
-
-const easeOut = (t: number) => 1 - (1 - t) ** 3;
-const easeInOut = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
 
 export interface ViewerEvents {
   onSculpt?(state: SculptState): void;
@@ -49,7 +56,23 @@ const VIEWS: Record<View, { az: number; el: number }> = {
   iso: { az: 32, el: 22 },
 };
 
-/** Camera moves orbit the target (direction slerped, distance lerped): no dip through the model. */
+// -- timings (ms), on top of lib/motion.ts DUR ----------------------------------------------
+/** A quick view or a fit: deliberate, between DUR.slow and DUR.hero. */
+const VIEW_MS = 760;
+/** A new model printed up from the bed. */
+const PRINT_MS = 1600;
+/** Another model (history, new settings) rises quicker, with a fainter print head. */
+const RISE_MS = DUR.slow;
+/** The idle turntable comes up to speed instead of starting at full speed. */
+const ROTATE_SPEED = 0.55;
+const ROTATE_RAMP = 1400;
+
+/** The print head's glow: a lifted, warm gold (the gold of the interface, lit). */
+const HEAD_GOLD = new THREE.Color(0xffc46a);
+/** Radians per ms the nozzle goes round the layer (about 1.4 turns a second). */
+const HEAD_SPIN = 0.0088;
+
+/** Camera moves orbit the target (direction slerped, distance eased with a breath). */
 interface Tween {
   fromTarget: THREE.Vector3;
   toTarget: THREE.Vector3;
@@ -59,9 +82,86 @@ interface Tween {
   toDist: number;
   start: number;
   duration: number;
+  /** how far the dolly breathes out, as a share of the distance */
+  depth: number;
 }
 
+/** A model rising from the bed: the clip plane goes up to its top. */
+interface Reveal {
+  start: number;
+  height: number;
+  duration: number;
+  ease: Ease;
+  /** how hot the print head glows, 0..1 */
+  glow: number;
+}
+
+/** What the filament colour drives, cross-dissolved together when it changes. */
+interface Palette {
+  color: THREE.Color;
+  over: THREE.Color;
+  cut: THREE.Color;
+  wire: THREE.Color;
+  wireAlpha: number;
+}
+const palette = (): Palette => ({ color: new THREE.Color(), over: new THREE.Color(), cut: new THREE.Color(), wire: new THREE.Color(), wireAlpha: 0.34 });
+
 const ONE = new THREE.Quaternion();
+const NO_CUT = 1e6;
+
+// -- shader patches ----------------------------------------------------------------------------
+// The print head, shared by the model and its reflection (mirrored: HEAD_POS and HEAD_EYE are
+// the fragment and the camera in the model's own, unmirrored space).
+const HEAD_PARS = `
+uniform float uHead;      // brightness of the print head, 0 = off
+uniform float uHeadZ;     // height of the layer being laid: the cut, mm
+uniform vec3 uHeadColor;  // its glow
+uniform vec3 uHeadCap;    // the fresh layer, seen through the cut
+uniform float uHeadSpin;  // where the nozzle is round the layer, radians
+uniform vec2 uHeadCenter; // the model's centre on the bed
+uniform float uHeadBand;  // how far below the layer the plastic is still warm, mm
+uniform float uHeadHatch; // infill spacing on the fresh layer, mm
+uniform float uHeadGlow;  // how hot it glows: 1 for a new print, less for a model rising again
+varying vec3 vWorldPos;
+`;
+const HEAD_EMISSIVE = `
+  float headInfill = 0.0;
+  float headLine = 0.0;
+  if (uHead > 0.0) {
+    // derivatives first, outside any per-fragment branch
+    float below = max(uHeadZ - HEAD_POS.z, 0.0);
+    float px = below / max(fwidth(HEAD_POS.z), 1e-4); // pixels under the layer
+    // where the eye ray through this pixel meets the layer: the infill lanes are drawn there,
+    // so the inside seen through the cut reads as a flat, solid slice
+    vec3 ray = HEAD_POS - HEAD_EYE;
+    vec2 onLayer = HEAD_EYE.xy + ray.xy * ((uHeadZ - HEAD_EYE.z) / min(ray.z, -1e-3));
+    float lane = (onLayer.x + onLayer.y) * 0.70710678 / uHeadHatch;
+    float laneW = fwidth(lane);
+    headInfill = (1.0 - smoothstep(0.3, 1.1, abs(fract(lane + 0.5) - 0.5) / max(laneW, 1e-4)))
+      * (1.0 - smoothstep(0.12, 0.3, laneW)); // too fine to draw when far away
+    // the perimeter being laid, all round the cut: on the outer wall in front, on the inner wall
+    // seen through the cut behind; brightest where the nozzle has just passed. A few pixels
+    // wide whatever the zoom, never more than a few mm (faces seen edge-on).
+    float near = 1.0 - smoothstep(1.5, 3.0, below);
+    vec2 r = HEAD_POS.xy - uHeadCenter;
+    float behind = mod(uHeadSpin - atan(r.y, r.x + 1e-6), 6.2831853);
+    float trail = exp(-1.1 * behind);
+    headLine = (1.0 - smoothstep(0.9, 2.6, px)) * near * (0.55 + 1.45 * trail) * uHeadGlow;
+    if (gl_FrontFacing) {
+      // its glow on the wall under it, and the warmth of the fresh plastic fading below
+      float halo = exp(-px / 5.0) * near;
+      float warm = exp(-below / uHeadBand);
+      totalEmissiveRadiance += uHeadColor * uHead * (1.5 * headLine + uHeadGlow * (0.4 * halo + 0.16 * warm));
+    }
+  }
+`;
+const HEAD_CAP = `
+  if (uHead > 0.0 && !gl_FrontFacing) {
+    vec3 headCap = uHeadCap * (1.0 + 0.28 * uHeadGlow * headInfill) + uHeadColor * (1.3 * headLine);
+    gl_FragColor.rgb = mix(gl_FragColor.rgb, headCap, uHead);
+  }
+`;
+const WORLD_POS_VERTEX = '#include <project_vertex>\n vWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;';
 
 export class Viewer {
   readonly sculpt: Sculpt;
@@ -76,8 +176,8 @@ export class Viewer {
   private readonly material: THREE.MeshPhysicalMaterial;
   private readonly reflectionMaterial: THREE.MeshPhysicalMaterial;
   private readonly wireMaterial: THREE.MeshBasicMaterial;
-  private readonly clip = new THREE.Plane(new THREE.Vector3(0, 0, -1), 1e6);
-  private readonly mirrorClip = new THREE.Plane(new THREE.Vector3(0, 0, 1), 1e6);
+  private readonly clip = new THREE.Plane(new THREE.Vector3(0, 0, -1), NO_CUT);
+  private readonly mirrorClip = new THREE.Plane(new THREE.Vector3(0, 0, 1), NO_CUT);
   private readonly fade = { value: 30 };
   // Overhang map: faces steeper than 45° below horizontal, not resting on the bed, are painted.
   // Section view: inner (back) faces seen through the cut are painted flat, so the wall reads
@@ -88,30 +188,67 @@ export class Viewer {
     uSection: { value: 0 },
     uCutColor: { value: new THREE.Color(0x553311) },
   };
+  // The print head of the reveal (see HEAD_PARS).
+  private readonly headU = {
+    uHead: { value: 0 },
+    uHeadZ: { value: 0 },
+    uHeadColor: { value: HEAD_GOLD.clone() },
+    uHeadCap: { value: new THREE.Color() },
+    uHeadSpin: { value: 0 },
+    uHeadCenter: { value: new THREE.Vector2() },
+    uHeadBand: { value: 3 },
+    uHeadHatch: { value: 2.5 },
+    uHeadGlow: { value: 1 },
+  };
   private section: number | null = null;
   private mesh: THREE.Mesh | null = null;
   private reflection: THREE.Mesh | null = null;
   private wire: THREE.Mesh | null = null;
-  private wireframe = false;
   private view: View = 'iso';
   private holdView = false; // a quick view was picked: no auto-rotate until the user moves
   private dirty = true;
   private castVersion = -1; // version of the model's positions the shadow map was drawn with
   private raf = 0;
-  private reveal: { start: number; height: number } | null = null;
+  private reveal: Reveal | null = null;
   private tween: Tween | null = null;
+  private readonly tweenState: Tween = {
+    fromTarget: new THREE.Vector3(), toTarget: new THREE.Vector3(), fromDir: new THREE.Vector3(),
+    turn: new THREE.Quaternion(), fromDist: 1, toDist: 1, start: 0, duration: VIEW_MS, depth: 0,
+  };
   private lastInteraction = performance.now();
   private autoRotate = true;
+  private rotateSince = 0;
   private editing = false;
   private loadToken = 0;
+  private filament: string | null = null;
+  // what moves: each one is stepped by the loop and asks for frames only while it runs
+  private readonly tint = new Glide(1); // 0 → 1: from paletteFrom to paletteTo
+  private readonly paletteFrom = palette();
+  private readonly paletteTo = palette();
+  private wireAlpha = 0.34; // the wire's opacity for this filament, before its fade
+  private readonly wireFade = new Glide(0);
+  private readonly overhangFade = new Glide(0);
+  private readonly cut = new Glide(NO_CUT); // the section's height, mm (NO_CUT: whole)
+  private readonly headFade = new Glide(0);
+  private readonly motionQuery: MediaQueryList;
+  private calm: boolean; // prefers-reduced-motion, kept current without asking every frame
+  private readonly onMotionPref = () => (this.calm = this.motionQuery.matches);
   private readonly resize: ResizeObserver;
+  // scratch objects for the loop (it allocates nothing)
+  private readonly qTmp = new THREE.Quaternion();
+  private readonly vTmp = new THREE.Vector3();
 
   constructor(
     private readonly host: HTMLElement,
     private readonly events: ViewerEvents = {},
   ) {
+    this.motionQuery = matchMedia('(prefers-reduced-motion: reduce)');
+    this.calm = reducedMotion();
+    this.motionQuery.addEventListener('change', this.onMotionPref);
+
     // Transparent: the studio backdrop (an ivory sweep) is painted by CSS behind the canvas.
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
+    // a stencil: the model marks its pixels, so the bed's grid never draws over its base (see Bed)
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, stencil: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.05;
@@ -121,7 +258,8 @@ export class Viewer {
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     // Only the model casts a shadow (unclipped: clipShadows is off) and the key light moves only
     // when the view is framed, so the shadow map is redrawn when one of them changes (see draw),
-    // not on every frame of an orbit, the auto-rotate or the reveal.
+    // not on every frame of an orbit or the auto-rotate. The reveal is the exception: the shadow
+    // grows with the print (clipShadows on while it runs).
     this.renderer.shadowMap.autoUpdate = false;
     this.renderer.shadowMap.needsUpdate = true;
     this.renderer.localClippingEnabled = true;
@@ -163,27 +301,34 @@ export class Viewer {
       side: THREE.DoubleSide, // the reveal cuts the model open: show its inside, not a hole
       shadowSide: THREE.BackSide,
       clippingPlanes: [this.clip],
+      // its pixels are marked: the grid lines, 0.05 mm above the plate, skip them, so the base
+      // (on the plate, seen through the cut of the print or the section) is not ruled over
+      stencilWrite: true,
+      stencilRef: 1,
+      stencilZPass: THREE.ReplaceStencilOp,
     });
     this.material.onBeforeCompile = (shader) => {
-      Object.assign(shader.uniforms, this.overhangU);
-      shader.vertexShader = 'varying float vWorldZ;\n' + shader.vertexShader.replace(
-        '#include <project_vertex>',
-        '#include <project_vertex>\n vWorldZ = (modelMatrix * vec4(transformed, 1.0)).z;',
-      );
+      Object.assign(shader.uniforms, this.overhangU, this.headU);
+      shader.vertexShader = 'varying vec3 vWorldPos;\n' + shader.vertexShader.replace('#include <project_vertex>', WORLD_POS_VERTEX);
       shader.fragmentShader =
-        'uniform float uOverhang;\nuniform vec3 uOverColor;\nuniform float uSection;\nuniform vec3 uCutColor;\nvarying float vWorldZ;\n' +
+        'uniform float uOverhang;\nuniform vec3 uOverColor;\nuniform float uSection;\nuniform vec3 uCutColor;\n' + HEAD_PARS +
+        '#define HEAD_POS vWorldPos\n#define HEAD_EYE cameraPosition\n' +
         shader.fragmentShader.replace(
           '#include <normal_fragment_maps>',
           `#include <normal_fragment_maps>
-          if (uOverhang > 0.5) {
+          if (uOverhang > 0.0) {
             vec3 worldN = inverseTransformDirection(normal, viewMatrix);
             // n.z < -sin(45°), softened over a few degrees; faces on the bed rest on it
-            float over = (1.0 - smoothstep(-0.74, -0.67, worldN.z)) * step(0.4, vWorldZ);
-            diffuseColor.rgb = mix(diffuseColor.rgb, uOverColor, over * 0.92);
+            float over = (1.0 - smoothstep(-0.74, -0.67, worldN.z)) * step(0.4, vWorldPos.z);
+            diffuseColor.rgb = mix(diffuseColor.rgb, uOverColor, over * 0.92 * uOverhang);
           }`,
+        ).replace(
+          '#include <emissivemap_fragment>',
+          '#include <emissivemap_fragment>\n' + HEAD_EMISSIVE,
         ).replace(
           '#include <tonemapping_fragment>',
           `if (uSection > 0.5 && !gl_FrontFacing) gl_FragColor = vec4(uCutColor, 1.0);
+          ${HEAD_CAP}
           #include <tonemapping_fragment>`,
         );
     };
@@ -192,26 +337,35 @@ export class Viewer {
     this.reflectionMaterial.transparent = true;
     this.reflectionMaterial.opacity = 0.42;
     this.reflectionMaterial.depthWrite = false;
+    this.reflectionMaterial.stencilWrite = false; // under the plate: the grid shows over it
     this.reflectionMaterial.clippingPlanes = [this.mirrorClip];
     this.reflectionMaterial.onBeforeCompile = (shader) => {
-      // Fade the mirrored model out with depth below the bed.
-      shader.uniforms.uFade = this.fade;
-      shader.vertexShader = 'varying float vWorldZ;\n' + shader.vertexShader.replace(
-        '#include <project_vertex>',
-        '#include <project_vertex>\n vWorldZ = (modelMatrix * vec4(transformed, 1.0)).z;',
-      );
-      shader.fragmentShader = 'uniform float uFade;\nvarying float vWorldZ;\n' + shader.fragmentShader.replace(
-        '#include <tonemapping_fragment>',
-        'gl_FragColor.a *= smoothstep(-uFade, 0.0, vWorldZ);\n#include <tonemapping_fragment>',
-      );
+      // Fade the mirrored model out with depth below the bed; the section cap and the print
+      // head show in it too, mirrored.
+      Object.assign(shader.uniforms, { uFade: this.fade, uSection: this.overhangU.uSection, uCutColor: this.overhangU.uCutColor }, this.headU);
+      shader.vertexShader = 'varying vec3 vWorldPos;\n' + shader.vertexShader.replace('#include <project_vertex>', WORLD_POS_VERTEX);
+      shader.fragmentShader =
+        'uniform float uFade;\nuniform float uSection;\nuniform vec3 uCutColor;\n' + HEAD_PARS +
+        '#define HEAD_POS vec3(vWorldPos.xy, -vWorldPos.z)\n#define HEAD_EYE vec3(cameraPosition.xy, -cameraPosition.z)\n' +
+        shader.fragmentShader.replace(
+          '#include <emissivemap_fragment>',
+          '#include <emissivemap_fragment>\n' + HEAD_EMISSIVE,
+        ).replace(
+          '#include <tonemapping_fragment>',
+          `if (uSection > 0.5 && !gl_FrontFacing) gl_FragColor.rgb = uCutColor;
+          ${HEAD_CAP}
+          gl_FragColor.a *= smoothstep(-uFade, 0.0, vWorldPos.z);
+          #include <tonemapping_fragment>`,
+        );
     };
+    this.reflectionMaterial.customProgramCacheKey = () => 'forma-reflection';
 
     // The triangles over the surface: the solid is pushed back a little so the lines win.
     this.wireMaterial = new THREE.MeshBasicMaterial({
       color: 0x000000,
       wireframe: true,
       transparent: true,
-      opacity: 0.32,
+      opacity: 0,
       depthWrite: false,
       clippingPlanes: [this.clip],
     });
@@ -226,9 +380,10 @@ export class Viewer {
     this.controls.maxPolarAngle = Math.PI / 2 - 0.03; // stay above the bed
     this.controls.minDistance = 15;
     this.controls.maxDistance = 3000;
-    this.controls.autoRotateSpeed = 0.55;
+    this.controls.autoRotateSpeed = ROTATE_SPEED;
     this.controls.addEventListener('start', () => {
       this.holdView = false;
+      this.tween = null; // the hand takes over from wherever a camera move has got to
       this.touch();
       this.events.onView?.(null);
     });
@@ -257,28 +412,42 @@ export class Viewer {
 
   // -- public API ------------------------------------------------------------------------
   setPrinter(p: Printer): void {
-    this.bed.build(p);
+    // the plate resizes from the one shown (not on the first one, nor under reduced motion)
+    const animate = !!this.bed.printer && !this.still();
+    this.bed.build(p, animate, performance.now());
     this.updateFit();
-    if (!this.mesh) this.fit(false);
+    if (!this.mesh) this.fit(animate);
     this.dirty = true;
   }
 
   setFilament(hex: string): void {
-    this.material.color.set(hex);
-    this.reflectionMaterial.color.set(hex);
+    const first = this.filament === null;
+    this.filament = hex;
+    const to = this.paletteTo;
+    to.color.set(hex);
     // the overhang paint must stand out from the filament: blue on warm colours, red otherwise
-    this.overhangU.uOverColor.value.set(this.overhangColor(hex));
-    this.overhangU.uCutColor.value.set(hex).multiplyScalar(0.38);
+    to.over.set(this.overhangColor(hex));
+    to.cut.set(hex).multiplyScalar(0.38);
     // dark lines on light filaments, light lines on dark ones
-    const light = new THREE.Color(hex).getHSL({ h: 0, s: 0, l: 0 }).l > 0.42;
-    this.wireMaterial.color.set(light ? 0x000000 : 0xffffff);
-    this.wireMaterial.opacity = light ? 0.34 : 0.22;
+    const light = to.color.getHSL({ h: 0, s: 0, l: 0 }).l > 0.42;
+    to.wire.set(light ? 0x000000 : 0xffffff);
+    to.wireAlpha = light ? 0.34 : 0.22;
     this.sculpt.setCursorColor(light ? 0x17130f : 0xffffff);
+    // cross-dissolve from the colours on screen now (a dissolve may be under way)
+    const from = this.paletteFrom;
+    from.color.copy(this.material.color);
+    from.over.copy(this.overhangU.uOverColor.value);
+    from.cut.copy(this.overhangU.uCutColor.value);
+    from.wire.copy(this.wireMaterial.color);
+    from.wireAlpha = this.wireAlpha;
+    this.tint.jump(0);
+    this.tint.to(1, performance.now(), first || this.still() ? 0 : DUR.base, easeInOut);
+    this.applyPalette();
     this.dirty = true;
   }
 
-  /** The colour overhangs are painted in, for the legend. */
-  overhangColor(hex = '#' + this.material.color.getHexString()): string {
+  /** The colour overhangs are painted in, for the legend (of the filament, not of a dissolve). */
+  overhangColor(hex = this.filament ?? '#' + this.material.color.getHexString()): string {
     const hsl = { h: 0, s: 0, l: 0 };
     new THREE.Color(hex).getHSL(hsl);
     const warm = hsl.s > 0.25 && (hsl.h < 0.14 || hsl.h > 0.88);
@@ -286,17 +455,16 @@ export class Viewer {
   }
 
   setOverhang(on: boolean): void {
-    this.overhangU.uOverhang.value = on ? 1 : 0;
+    this.overhangFade.to(on ? 1 : 0, performance.now(), this.still() ? 0 : 300, easeInOut);
+    this.overhangU.uOverhang.value = this.overhangFade.value;
     this.dirty = true;
   }
 
   /** Show the mesh triangles over the surface. */
   setWireframe(on: boolean): void {
-    this.wireframe = on;
-    if (this.wire) this.wire.visible = on;
-    this.material.polygonOffset = on;
-    this.material.polygonOffsetFactor = on ? 1 : 0;
-    this.material.polygonOffsetUnits = on ? 1 : 0;
+    // short: the lines must be there at once, they only arrive softly
+    this.wireFade.to(on ? 1 : 0, performance.now(), this.still() ? 0 : DUR.short, easeOut);
+    this.applyWire();
     this.dirty = true;
   }
 
@@ -311,17 +479,34 @@ export class Viewer {
 
   /** Cut the model horizontally at a fraction of its height, to look inside (null: whole). */
   setSection(frac: number | null): void {
+    const toggled = (this.section === null) !== (frac === null);
     this.section = frac;
-    this.overhangU.uSection.value = frac === null ? 0 : 1;
-    this.applyClip();
+    // on and off glide in and out over the model; the slider is followed closely
+    this.applyClip(toggled ? 'toggle' : 'follow');
   }
 
-  private applyClip(): void {
+  /** Move the cut to the section's height (or out of the model), gliding unless `how` is 'jump'. */
+  private applyClip(how: 'jump' | 'toggle' | 'follow' = 'jump'): void {
     if (this.reveal) return; // the reveal drives the plane while it runs
-    const h = this.size()?.[2] ?? 0;
-    const c = this.section !== null && this.mesh ? Math.max(0.2, this.section * h) : 1e6;
-    this.clip.constant = c;
-    this.mirrorClip.constant = c;
+    const h = this.size()?.[2];
+    if (h === undefined) {
+      this.cut.jump(NO_CUT);
+    } else {
+      const top = h + 0.5; // just above the model: no cut, but a place to glide from and to
+      if (this.cut.value >= NO_CUT) this.cut.jump(top);
+      const goal = this.section !== null ? Math.max(0.2, this.section * h) : top;
+      const ms = how === 'jump' || this.still() ? 0 : how === 'toggle' ? DUR.slow : DUR.short;
+      this.cut.to(goal, performance.now(), ms, how === 'follow' ? easeOut : easeInOut);
+    }
+    this.syncClip();
+  }
+
+  /** The clip planes and the cap follow the section's glide; settled out of the model, no cut. */
+  private syncClip(): void {
+    const open = this.section === null && !this.cut.moving;
+    if (open && this.cut.value < NO_CUT) this.cut.jump(NO_CUT);
+    this.clip.constant = this.mirrorClip.constant = this.cut.value;
+    this.overhangU.uSection.value = open ? 0 : 1; // the cap shows while a cut is on or moving
     this.dirty = true;
   }
 
@@ -356,8 +541,14 @@ export class Viewer {
     this.setGeometry(welded.positions, welded.index);
     const size = this.size()!;
     this.updateFit();
-    if (!opts.keepView) this.fit(!reducedMotion());
-    if (opts.reveal && !reducedMotion()) this.reveal = { start: performance.now(), height: size[2] };
+    const still = this.still();
+    if (!opts.keepView) this.fit(!still);
+    const now = performance.now();
+    // a new model is printed up from the bed; another one (the history, new settings) rises
+    // quicker under a fainter head; the same one coming back (repaired edits) is just there
+    if (!still && opts.reveal) this.startReveal(now, size[2], PRINT_MS, easeSteady, 1);
+    else if (!still && !opts.keepView) this.startReveal(now, size[2], RISE_MS, easeInOut, 0.4);
+    else this.dims.enter(now, false);
     this.touch();
     return size;
   }
@@ -368,7 +559,7 @@ export class Viewer {
     this.disposeModel();
     this.dims.update(null);
     this.bed.setFits(true);
-    this.fit(!reducedMotion());
+    this.fit(!this.still());
   }
 
   /** Model size in mm (X, Y, Z), or null. */
@@ -408,25 +599,26 @@ export class Viewer {
     const el = THREE.MathUtils.degToRad(this.view === 'iso' && !this.mesh ? 34 : v.el);
     const dir = new THREE.Vector3(Math.cos(el) * Math.sin(az), -Math.cos(el) * Math.cos(az), Math.sin(el));
     this.placeShadow(center, radius);
-    if (!animate) {
+    if (!animate || this.still()) {
       this.tween = null;
       this.camera.position.copy(center).addScaledVector(dir, dist);
       this.controls.target.copy(center);
       this.controls.update();
     } else {
-      const offset = this.camera.position.clone().sub(this.controls.target);
-      const fromDist = Math.max(offset.length(), 1e-3);
-      const fromDir = offset.divideScalar(fromDist);
-      this.tween = {
-        fromTarget: this.controls.target.clone(),
-        toTarget: center,
-        fromDir,
-        turn: new THREE.Quaternion().setFromUnitVectors(fromDir, dir),
-        fromDist,
-        toDist: dist,
-        start: performance.now(),
-        duration: 650,
-      };
+      const tw = this.tweenState;
+      const offset = this.vTmp.copy(this.camera.position).sub(this.controls.target);
+      tw.fromDist = Math.max(offset.length(), 1e-3);
+      tw.fromDir.copy(offset).divideScalar(tw.fromDist);
+      tw.fromTarget.copy(this.controls.target);
+      tw.toTarget.copy(center);
+      tw.turn.setFromUnitVectors(tw.fromDir, dir);
+      tw.toDist = dist;
+      tw.start = performance.now();
+      tw.duration = VIEW_MS;
+      // the dolly breathes deeper on a long swing; a fit where the camera already is just breathes
+      const angle = 2 * Math.acos(Math.min(1, Math.abs(tw.turn.w)));
+      tw.depth = 0.02 + 0.025 * Math.min(1, angle / (Math.PI / 2));
+      this.tween = tw;
     }
     this.dirty = true;
   }
@@ -458,6 +650,7 @@ export class Viewer {
   dispose(): void {
     cancelAnimationFrame(this.raf);
     this.resize.disconnect();
+    this.motionQuery.removeEventListener('change', this.onMotionPref);
     this.controls.dispose();
     this.disposeModel();
     this.material.dispose();
@@ -468,6 +661,12 @@ export class Viewer {
   }
 
   // -- internals -------------------------------------------------------------------------
+  /** Under prefers-reduced-motion every change is instant. */
+  private still(): boolean {
+    this.calm = reducedMotion();
+    return this.calm;
+  }
+
   private setGeometry(positions: Float32Array, index: Uint32Array): void {
     this.sculpt.detach();
     this.disposeModel();
@@ -488,14 +687,14 @@ export class Viewer {
     this.reflection.scale.z = -1; // mirrored in the bed plane (the model rests on Z = 0)
     this.reflection.renderOrder = 0;
     this.wire = new THREE.Mesh(g, this.wireMaterial);
-    this.wire.visible = this.wireframe;
     this.wire.raycast = () => {}; // the sculpt brush and picking only see the solid
     this.scene.add(this.reflection, this.mesh, this.wire);
+    this.applyWire();
     this.sculpt.attach(this.mesh);
     this.sculpt.setEnabled(this.editing);
     const size = this.size()!;
     this.fade.value = Math.max(8, size[2] * 0.35);
-    this.dims.update(g.boundingBox);
+    this.dims.update(g.boundingBox, true); // shown by load(), once the model is on the bed
     this.shadowsChanged();
   }
 
@@ -508,10 +707,58 @@ export class Viewer {
     g.disposeBoundsTree?.();
     g.dispose();
     this.mesh = this.reflection = this.wire = null;
-    this.reveal = null;
+    this.endReveal();
+    this.headFade.jump(0);
+    this.headU.uHead.value = 0;
     this.section = null;
-    this.clip.constant = this.mirrorClip.constant = 1e6;
+    this.cut.jump(NO_CUT);
+    this.syncClip();
     this.shadowsChanged(); // its shadow goes with it
+  }
+
+  /** The model rises from the bed: the clip plane goes up to its top, the print head glowing. */
+  private startReveal(now: number, height: number, duration: number, ease: Ease, glow: number): void {
+    const box = this.mesh!.geometry.boundingBox!;
+    this.reveal = { start: now, height, duration, ease, glow };
+    this.headU.uHeadGlow.value = glow;
+    this.headU.uHeadCenter.value.set((box.min.x + box.max.x) / 2, (box.min.y + box.max.y) / 2);
+    this.headU.uHeadBand.value = Math.max(1.5, height * 0.03);
+    this.headU.uHeadHatch.value = THREE.MathUtils.clamp(Math.max(box.max.x - box.min.x, box.max.y - box.min.y) / 26, 1, 3.5);
+    this.headFade.jump(0);
+    this.headFade.to(1, now, DUR.micro, easeOut);
+    this.material.clipShadows = true; // the shadow grows with the print
+    this.stepReveal(now);
+  }
+
+  private stepReveal(now: number): void {
+    const r = this.reveal!;
+    const t = Math.min(1, (now - r.start) / r.duration);
+    const z = r.ease(t) * (r.height + 0.5);
+    this.clip.constant = this.mirrorClip.constant = z; // keeps z <= h: the model rises layer by layer
+    this.headU.uHeadZ.value = z;
+    this.headU.uHeadSpin.value = (now - r.start) * HEAD_SPIN;
+    // the fresh layer: the filament lifted and warmed by the head's gold (a model rising again:
+    // a plain cut, a little darker than its lit surface)
+    const cap = this.headU.uHeadCap.value, c = this.material.color, g = r.glow;
+    cap.setRGB(
+      c.r * (0.62 + 0.28 * g) + HEAD_GOLD.r * 0.32 * g,
+      c.g * (0.62 + 0.28 * g) + HEAD_GOLD.g * 0.32 * g,
+      c.b * (0.62 + 0.28 * g) + HEAD_GOLD.b * 0.32 * g,
+    );
+    this.renderer.shadowMap.needsUpdate = true;
+    if (t >= 1) {
+      this.endReveal();
+      this.headFade.to(0, now, DUR.base, easeOut); // the last layer cools
+      this.applyClip('toggle'); // a section asked for meanwhile glides in now
+      this.dims.enter(now, true);
+    }
+  }
+
+  private endReveal(): void {
+    if (!this.reveal) return;
+    this.reveal = null;
+    this.material.clipShadows = false;
+    this.shadowsChanged(); // the whole model's shadow again
   }
 
   private shapeChanged(): void {
@@ -559,6 +806,31 @@ export class Viewer {
     this.dirty = true;
   }
 
+  /** The filament's colours at the dissolve's point (model, reflection, overhang paint, cap, wire). */
+  private applyPalette(): void {
+    const k = this.tint.value, a = this.paletteFrom, b = this.paletteTo;
+    this.material.color.lerpColors(a.color, b.color, k);
+    this.reflectionMaterial.color.copy(this.material.color);
+    this.overhangU.uOverColor.value.lerpColors(a.over, b.over, k);
+    this.overhangU.uCutColor.value.lerpColors(a.cut, b.cut, k);
+    this.wireMaterial.color.lerpColors(a.wire, b.wire, k);
+    this.wireAlpha = a.wireAlpha + (b.wireAlpha - a.wireAlpha) * k;
+    this.applyWire();
+  }
+
+  /** The wireframe at its fade: drawn (and the solid pushed back under it) while it shows at all. */
+  private applyWire(): void {
+    const f = this.wireFade.value;
+    const on = f > 0;
+    if (this.wire) this.wire.visible = on;
+    if (this.material.polygonOffset !== on) {
+      this.material.polygonOffset = on;
+      this.material.polygonOffsetFactor = on ? 1 : 0;
+      this.material.polygonOffsetUnits = on ? 1 : 0;
+    }
+    this.wireMaterial.opacity = this.wireAlpha * f;
+  }
+
   /** Render a frame; a sculpt stroke, undo or redo moves the model's vertices and its shadow. */
   private draw(): void {
     const pos = this.mesh?.geometry.getAttribute('position') as THREE.BufferAttribute | undefined;
@@ -583,34 +855,62 @@ export class Viewer {
     this.dirty = true;
   }
 
+  /** The camera move: the direction slerped, the target eased, the distance with its breath. */
+  private stepTween(now: number): void {
+    const tw = this.tween!;
+    const t = Math.min(1, (now - tw.start) / tw.duration);
+    const e = easeInOut(t);
+    const dir = this.vTmp.copy(tw.fromDir).applyQuaternion(this.qTmp.copy(ONE).slerp(tw.turn, e));
+    const dist = THREE.MathUtils.lerp(tw.fromDist, tw.toDist, e) * breath(t, tw.depth);
+    this.controls.target.lerpVectors(tw.fromTarget, tw.toTarget, e);
+    this.camera.position.copy(this.controls.target).addScaledVector(dir, dist);
+    if (t >= 1) this.tween = null;
+  }
+
   private loop = (): void => {
     this.raf = requestAnimationFrame(this.loop);
     const now = performance.now();
     const idle = now - this.lastInteraction > 4000;
-    this.controls.autoRotate =
-      this.autoRotate && idle && !this.holdView && !!this.mesh && !this.editing && !this.reveal && !this.tween && !reducedMotion();
+    const rotate =
+      this.autoRotate && idle && !this.holdView && !!this.mesh && !this.editing && !this.reveal && !this.tween && !this.calm;
+    if (rotate && !this.controls.autoRotate) this.rotateSince = now;
+    this.controls.autoRotate = rotate;
+    // the turntable comes up to speed (OrbitControls' damping softens its stop)
+    if (rotate) this.controls.autoRotateSpeed = ROTATE_SPEED * easeInOut(Math.min(1, (now - this.rotateSince) / ROTATE_RAMP));
 
+    let moved = false;
     if (this.tween) {
-      const t = Math.min(1, (now - this.tween.start) / this.tween.duration);
-      const e = easeInOut(t);
-      const tw = this.tween;
-      const dir = tw.fromDir.clone().applyQuaternion(ONE.clone().slerp(tw.turn, e));
-      this.controls.target.lerpVectors(tw.fromTarget, tw.toTarget, e);
-      this.camera.position.copy(this.controls.target).addScaledVector(dir, THREE.MathUtils.lerp(tw.fromDist, tw.toDist, e));
-      if (t >= 1) this.tween = null;
-      this.dirty = true;
+      this.stepTween(now);
+      moved = true;
     }
     if (this.reveal) {
-      const t = Math.min(1, (now - this.reveal.start) / 1500);
-      const h = easeOut(t) * (this.reveal.height + 0.5);
-      this.clip.constant = h; // keeps z <= h: the model rises from the bed layer by layer
-      this.mirrorClip.constant = h;
-      if (t >= 1) {
-        this.reveal = null;
-        this.applyClip();
-      }
-      this.dirty = true;
+      this.stepReveal(now);
+      moved = true;
     }
+    if (this.tint.step(now)) {
+      this.applyPalette();
+      moved = true;
+    }
+    if (this.wireFade.step(now)) {
+      this.applyWire();
+      moved = true;
+    }
+    if (this.overhangFade.step(now)) {
+      this.overhangU.uOverhang.value = this.overhangFade.value;
+      moved = true;
+    }
+    if (this.headFade.step(now)) {
+      this.headU.uHead.value = this.headFade.value;
+      moved = true;
+    }
+    if (this.cut.step(now)) {
+      if (!this.reveal) this.syncClip();
+      moved = true;
+    }
+    if (this.bed.tick(now)) moved = true;
+    if (this.dims.tick(now)) moved = true;
+    if (this.sculpt.tick(now)) moved = true;
+    if (moved) this.dirty = true;
     if (this.controls.update()) this.dirty = true;
     if (this.controls.autoRotate) this.dirty = true;
     if (!this.dirty) return;

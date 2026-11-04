@@ -5,6 +5,8 @@
 import type { App, AppState } from '../app';
 import { attr, h, memo, prop } from '../lib/dom';
 import { icon, mark } from '../lib/icons';
+import { DUR, enter } from '../lib/motion';
+import { reveal } from './print';
 
 interface Status {
   text: string;
@@ -105,11 +107,17 @@ export function mountTopbar(root: HTMLElement, app: App): void {
     h('div', { class: 'topbar-actions' }, guideBtn, editBtn, historyBtn, helpBtn, rule, download),
   );
 
-  // the pill is redrawn only when its words change: a new spinner would restart its turn
+  // The pill is redrawn only when its words change (its dot breathes while something is cooking,
+  // and a redraw would restart it). The name and the status come in from below when they
+  // change, the download rises when a model arrives: on top of what is already written.
   const pillView = memo();
+  let mounted = false;
   const update = (s: AppState) => {
     const text = app.modelTitle(s);
-    prop(nameText, 'textContent', text);
+    if (nameText.textContent !== text) {
+      nameText.textContent = text;
+      if (mounted) void reveal(nameText, 0, DUR.slow, 70);
+    }
     // only the model on the bed has a name to change, not a job or a preview in progress
     const renamable = !!s.current && !app.working(s) && !s.draft;
     prop(nameBtn, 'disabled', !renamable);
@@ -117,20 +125,31 @@ export function mountTopbar(root: HTMLElement, app: App): void {
     prop(nameBtn, 'title', renamable ? `${text} · clic per rinominare` : text);
     if (renaming && !renamable) endRename(false);
     const st = status(app, s);
+    const pillWasHidden = pill.hidden;
     prop(pill, 'hidden', !st);
     if (st) {
       pillView([st.tone, st.text, !!st.busy], () => {
-        pill.className = `pill pill-${st.tone}`;
-        pill.replaceChildren(st.busy ? icon('spinner', 12) : '', st.text);
+        pill.className = `pill pill-${st.tone}${st.busy ? ' is-busy' : ''}`;
+        const words = h('span', { class: 'pill-text' }, st.text);
+        pill.replaceChildren(words);
+        // a pill that was there turns its colour (CSS) while the new words rise into it
+        if (mounted && !pillWasHidden) void reveal(words, 0, DUR.base, 100);
       });
+      if (mounted && pillWasHidden) void enter.rise(pill, 0, 6, DUR.base);
     }
     attr(editBtn, 'aria-pressed', String(s.edit));
     prop(editBtn, 'disabled', !s.current || app.generating(s));
     attr(historyBtn, 'aria-pressed', String(s.panel === 'history'));
     const c = s.current;
     const ready = !!c && s.sculpt.steps === 0; // the server's file would not have the edits
+    const downloadWasHidden = download.hidden;
     prop(download, 'hidden', !c);
     prop(rule, 'hidden', !c);
+    if (mounted && c && downloadWasHidden) {
+      void enter.fade(rule, 0, DUR.base);
+      void enter.rise(download, 60, 10, 360);
+    }
+    mounted = true;
     if (c) {
       attr(download, 'href', c.urls.export['3mf']);
       attr(download, 'download', '');

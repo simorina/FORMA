@@ -4,6 +4,8 @@ import { MESH_EXTENSIONS, type ModelInfo, type ProviderInfo, type Quality } from
 import { attr, h, prop, render } from '../lib/dom';
 import { ago, dims, grams, title } from '../lib/format';
 import { icon } from '../lib/icons';
+import { DUR, EASE, canAnimate, enter, play, stagger } from '../lib/motion';
+import { glide, riseIn, segmented, shown, swap } from './print';
 
 /** Italian examples that read well for the AI models and map to the offline shapes too. */
 export const EXAMPLES = [
@@ -21,6 +23,9 @@ const QUALITIES: { key: Quality; label: string }[] = [
   { key: 'standard', label: 'Standard' },
   { key: 'high', label: 'Alta' },
 ];
+
+type Model = AppState['history'][number];
+interface HistoryRow { li: HTMLLIElement; open: HTMLButtonElement; no: HTMLElement; meta: HTMLElement }
 
 export function mountLeftPanel(root: HTMLElement, app: App): { focusPrompt(): void } {
   // -- tabs ------------------------------------------------------------------------------
@@ -41,6 +46,27 @@ export function mountLeftPanel(root: HTMLElement, app: App): { focusPrompt(): vo
       void app.generate();
     }
   });
+  // An example is written into the field: the field flashes, then the words appear from left
+  // to right behind a fine ink line. Visual only, over the field: its value is set at once.
+  const veil = h('span', { class: 'prompt-veil', 'aria-hidden': 'true' });
+  const quill = h('span', { class: 'prompt-quill', 'aria-hidden': 'true' });
+  const promptField = h('div', { class: 'prompt-field' }, prompt, veil, quill);
+  const stopInscribing = () => {
+    for (const el of [veil, quill]) for (const a of el.getAnimations()) a.cancel();
+  };
+  const inscribe = () => {
+    stopInscribing();
+    if (!canAnimate()) return;
+    const w = promptField.clientWidth;
+    const o = { duration: DUR.slow, easing: EASE.inOut };
+    void play(veil, [{ opacity: 1, clipPath: 'inset(0 0 0 0)' }, { opacity: 1, clipPath: 'inset(0 0 0 100%)' }], o);
+    void play(quill, [
+      { opacity: 1, transform: 'translateX(2px)' },
+      { opacity: 1, offset: 0.8 },
+      { opacity: 0, transform: `translateX(${w - 2}px)` },
+    ], o);
+  };
+  prompt.addEventListener('input', stopInscribing); // typing shows what is typed, now
   const generate = h('button', { class: 'btn btn-primary', type: 'button', onclick: () => app.generate() }, 'Genera');
   const hint = h('span', { id: 'prompt-hint', class: 'meta' }, 'Invio per generare');
   const review = h('input', { type: 'checkbox', class: 'switch', role: 'switch', 'aria-label': 'Mostrami prima l’immagine' }) as HTMLInputElement;
@@ -61,6 +87,7 @@ export function mountLeftPanel(root: HTMLElement, app: App): { focusPrompt(): vo
           prompt.value = text;
           app.store.set({ prompt: text });
           prompt.focus();
+          inscribe();
         },
       }, text)),
     ),
@@ -106,7 +133,7 @@ export function mountLeftPanel(root: HTMLElement, app: App): { focusPrompt(): vo
     h('section', { class: 'block block-prompt' },
       h('p', { class: 'kicker', 'aria-hidden': 'true' }, 'Su misura'),
       h('label', { class: 'prompt-label', for: 'prompt' }, 'Cosa vuoi ', h('em', null, 'stampare?')),
-      prompt,
+      promptField,
       h('div', { class: 'prompt-foot' }, hint, generate),
       reviewRow),
     h('section', { class: 'block block-examples' },
@@ -124,26 +151,23 @@ export function mountLeftPanel(root: HTMLElement, app: App): { focusPrompt(): vo
   // -- history ---------------------------------------------------------------------------
   const historyCount = h('span', { class: 'meta' });
   const historyList = h('ul', { class: 'history' });
+  const historyHead = h('div', { class: 'history-head' }, h('h2', { class: 'section-title' }, 'Cronologia'), historyCount);
   const viewHistory = h(
     'div',
     { class: 'view', id: 'view-history', role: 'tabpanel', 'aria-labelledby': 'tab-history' },
-    h('div', { class: 'history-head' }, h('h2', { class: 'section-title' }, 'Cronologia'), historyCount),
+    historyHead,
     historyList,
   );
 
   root.append(h('div', { class: 'panel-head' }, tabs, sheetClose), viewCreate, viewHistory);
+  // the first time in, the examples rise one after the other while the panel settles
+  void stagger(examples.children, (el, d) => enter.rise(el, d, 10, DUR.base), 45, 10, 260);
 
   // -- rendering -------------------------------------------------------------------------
-  const segmented = <T extends string>(
-    el: HTMLElement, items: { key: T; label: string; disabled?: boolean; title?: string }[], value: T, set: (v: T) => void,
-  ) => {
-    render(el, items.map((it) =>
-      h('button', {
-        class: 'seg', type: 'button', role: 'radio', 'aria-checked': String(it.key === value),
-        disabled: it.disabled, title: it.title, onclick: () => set(it.key),
-      }, it.label),
-    ));
-  };
+  // the choices stay in place (only their marks move) and the ink glides between them
+  const provider = segmented(providerSeg, (v) => app.setProvider(v));
+  const quality = segmented<Quality>(qualitySeg, (q) => app.setQuality(q));
+  const tabLine = glide(tabs, '.tab[aria-selected="true"]', 'line');
 
   const modelRow = (m: ModelInfo, selected: boolean) =>
     h('button', {
@@ -157,7 +181,12 @@ export function mountLeftPanel(root: HTMLElement, app: App): { focusPrompt(): vo
       selected ? m.notes.map((n) => h('span', { class: m.eu_restricted ? 'model-note is-warning' : 'model-note' }, n)) : null,
     );
 
-  const historyRow = (m: AppState['history'][number], s: AppState, no: number) => {
+  // The history keeps its rows (a row is made once per model it shows): choosing a model only
+  // moves the marks, so the list does not flash, and a model that arrives slides in on top
+  // while the others make room.
+  const rows = new Map<Model, HistoryRow>();
+  let listed: string[] = []; // the ids drawn, in order (none while it shows a placeholder)
+  const historyRow = (m: Model): HistoryRow => {
     const name = title(m.title || m.prompt, m.kind);
     let armed = false;
     const del = h('button', { class: 'icon-btn history-delete', type: 'button', 'aria-label': `Elimina ${name}`, title: 'Elimina' }, icon('trash'));
@@ -175,23 +204,82 @@ export function mountLeftPanel(root: HTMLElement, app: App): { focusPrompt(): vo
       }
       void app.remove(m);
     });
-    return h('li', { class: s.current?.id === m.id ? 'history-row is-current' : 'history-row' },
-      h('button', { class: 'history-open', type: 'button', 'aria-current': s.current?.id === m.id ? 'true' : 'false', onclick: () => void app.select(m, { reveal: true }, { sheet: null }) },
-        h('img', { class: 'thumb', src: m.urls.thumb, alt: '', width: 48, height: 48, loading: 'lazy' }),
-        h('span', { class: 'history-text' },
-          h('span', { class: 'history-no num', 'aria-hidden': 'true' }, `N° ${String(no).padStart(2, '0')}`),
-          h('span', { class: 'history-title' }, name),
-          h('span', { class: 'history-meta num' }, `${dims(m.report.bbox_mm)} mm · ${grams(m.report.pla_grams_typical)} g · ${ago(m.created_at)}`))),
-      del);
+    // the thumbnail fades up once it has loaded (lazily, as the list scrolls)
+    const thumb = h('img', { class: 'thumb', src: m.urls.thumb, alt: '', width: 48, height: 48, loading: 'lazy' }) as HTMLImageElement;
+    if (!thumb.complete) {
+      thumb.classList.add('is-loading');
+      const done = () => thumb.classList.remove('is-loading');
+      thumb.addEventListener('load', done, { once: true });
+      thumb.addEventListener('error', done, { once: true });
+    }
+    const no = h('span', { class: 'history-no num', 'aria-hidden': 'true' });
+    const meta = h('span', { class: 'history-meta num' });
+    const open = h('button', { class: 'history-open', type: 'button', 'aria-current': 'false', onclick: () => void app.select(m, { reveal: true }, { sheet: null }) },
+      thumb,
+      h('span', { class: 'history-text' }, no, h('span', { class: 'history-title' }, name), meta));
+    return { li: h('li', { class: 'history-row' }, open, del), open, no, meta };
+  };
+  const syncHistory = (s: AppState, live: boolean) => {
+    if (!s.history.length) {
+      rows.clear();
+      listed = [];
+      const text = s.historyLoaded
+        ? 'Ancora nessun modello. Ogni modello che generi resta qui, con le sue impostazioni di stampa.'
+        : 'Carico la cronologia…';
+      const only = historyList.children.length === 1 ? historyList.firstElementChild : null;
+      if (!only?.classList.contains('empty') || only.textContent !== text) render(historyList, h('li', { class: 'empty' }, text));
+      return;
+    }
+    const moving = live && canAnimate() && shown(historyList);
+    const tops = new Map<string, number>(); // where each row was, for the ones that move
+    if (moving) for (const [m, r] of rows) if (r.li.isConnected) tops.set(m.id, r.li.getBoundingClientRect().top);
+    const keep = new Set(s.history);
+    for (const m of [...rows.keys()]) if (!keep.has(m)) rows.delete(m);
+    const n = s.history.length;
+    const lis = s.history.map((m, i) => {
+      let r = rows.get(m);
+      if (!r) rows.set(m, (r = historyRow(m)));
+      const on = s.current?.id === m.id;
+      prop(r.li, 'className', on ? 'history-row is-current' : 'history-row');
+      attr(r.open, 'aria-current', on ? 'true' : 'false');
+      prop(r.no, 'textContent', `N° ${String(n - i).padStart(2, '0')}`);
+      prop(r.meta, 'textContent', `${dims(m.report.bbox_mm)} mm · ${grams(m.report.pla_grams_typical)} g · ${ago(m.created_at)}`);
+      return r.li;
+    });
+    const kids = historyList.children;
+    if (kids.length !== lis.length || lis.some((li, i) => kids[i] !== li)) historyList.replaceChildren(...lis);
+    const was = listed;
+    listed = s.history.map((m) => m.id);
+    if (!moving) return;
+    if (!was.length) {
+      void stagger(lis, (el, d) => enter.rise(el, d, 8, 340), 30, 4); // the list's first rows
+      return;
+    }
+    const seen = new Set(was);
+    lis.forEach((li, i) => {
+      if (!seen.has(listed[i])) {
+        // a new model: in from the left, once the rows under it have begun to make room
+        void play(li, [{ opacity: 0, transform: 'translateX(-16px)' }, { opacity: 1, transform: 'none' }],
+          { delay: 80, duration: 360, easing: EASE.out, fill: 'backwards' });
+        return;
+      }
+      const top = tops.get(listed[i]);
+      const dy = top === undefined ? 0 : top - li.getBoundingClientRect().top;
+      if (Math.abs(dy) > 0.5) void play(li, [{ transform: `translateY(${dy}px)` }, { transform: 'none' }], { duration: DUR.base, easing: EASE.inOut });
+    });
   };
 
   let prev: AppState | null = null;
   const update = (s: AppState) => {
+    const live = !!prev; // the first draw is the page itself: nothing comes in
     if (!prev || prev.panel !== s.panel) {
       attr(tabCreate, 'aria-selected', String(s.panel === 'create'));
       attr(tabHistory, 'aria-selected', String(s.panel === 'history'));
       prop(viewCreate, 'hidden', s.panel !== 'create');
       prop(viewHistory, 'hidden', s.panel !== 'history');
+      tabLine(live);
+      // the view that comes in rises, block after block
+      if (live) void riseIn(s.panel === 'create' ? viewCreate.children : [historyHead, ...historyList.children]);
     }
     prop(prompt, 'value', s.prompt);
     const empty = !s.current && !s.job;
@@ -213,29 +301,38 @@ export function mountLeftPanel(root: HTMLElement, app: App): { focusPrompt(): vo
           h('span', { class: 'photo-name' }, s.image.name),
           h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Togli la foto', onclick: () => { app.setImage(null); file.value = ''; } }, icon('close')))
         : null);
+      if (live && photo.firstElementChild) void enter.rise(photo.firstElementChild, 0, 8, DUR.base);
     }
 
     if (!prev || prev.providers !== s.providers || prev.provider !== s.provider || prev.modelKey !== s.modelKey || prev.offline !== s.offline) {
       const list: ProviderInfo[] = s.providers?.providers ?? [];
-      segmented(providerSeg, list.map((p) => ({
+      provider(list.map((p) => ({
         key: p.name, label: PROVIDER_SHORT[p.name] ?? p.label, disabled: !p.available, title: p.available ? p.description : p.reason,
-      })), s.provider, (v) => app.setProvider(v));
+      })), s.provider, live);
       const info = list.find((p) => p.name === s.provider);
-      providerNote.textContent = s.offline
+      const note = s.offline
         ? s.offline
         : info ? (info.reason || info.description) : 'Carico i modelli…';
+      if (providerNote.textContent !== note) {
+        providerNote.textContent = note;
+        if (live) void swap(providerNote);
+      }
       render(models, (info?.models ?? []).map((m) => modelRow(m, m.key === s.modelKey)));
+      if (prev && canAnimate() && shown(models)) {
+        if (prev.providers !== s.providers || prev.provider !== s.provider) {
+          void stagger(models.children, (el, d) => enter.rise(el, d, 8, 340), 35, 3); // another list
+        } else if (prev.modelKey !== s.modelKey) {
+          // the chosen model opens: its description and notes come in under its name
+          void stagger(models.querySelectorAll('[aria-checked="true"] :is(.model-desc, .model-note)'), (el, d) => enter.rise(el, d, 6, DUR.short), 40, 4);
+        }
+      }
     }
     if (!prev || prev.quality !== s.quality) {
-      segmented(qualitySeg, QUALITIES, s.quality, (q) => app.setQuality(q));
+      quality(QUALITIES, s.quality, live);
     }
     if (!prev || prev.history !== s.history || prev.current !== s.current || prev.historyLoaded !== s.historyLoaded) {
       prop(historyCount, 'textContent', s.history.length === 1 ? '1 modello' : `${s.history.length} modelli`);
-      render(historyList, s.history.length
-        ? s.history.map((m, i) => historyRow(m, s, s.history.length - i))
-        : h('li', { class: 'empty' }, s.historyLoaded
-          ? 'Ancora nessun modello. Ogni modello che generi resta qui, con le sue impostazioni di stampa.'
-          : 'Carico la cronologia…'));
+      syncHistory(s, live);
     }
     prev = s;
   };

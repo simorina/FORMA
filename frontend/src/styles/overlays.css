@@ -1,0 +1,133 @@
+/*
+ * The overlays in motion: the first run as a title card, "La prova", the generation stages, the
+ * view dock and the corner chips, the guided tour, the toasts, the drop overlay and the phone
+ * tab bar's ink. The choreographies are played by the modules (ui/stage.ts, ui/tour.ts,
+ * ui/toast.ts, main.ts) with the house's vocabulary (lib/motion.ts); this sheet holds what they
+ * need to look right, the motion that follows a state (CSS), and what replaces app.css's older
+ * entries. Only transform, opacity and clip-path move (and the stroke of two small drawings);
+ * the reduced-motion rule at the end of app.css stops all of it.
+ */
+
+/* -- exits: a ghost copy plays its exit as it is, it does not replay its entries ------------- */
+.motion-ghost:is(.draft, .progress, .toast, .tour-card, .tour-spot, .drop-overlay),
+.motion-ghost:is(.draft, .progress, .toast, .tour-card, .tour-spot, .drop-overlay) * {
+  animation: none !important;
+  transition: none !important;
+}
+.motion-ghost .toast-timer { visibility: hidden; }
+
+/* -- the first run: a title card ------------------------------------------------------------- */
+/* the kicker's letters track in (aria-hidden: the paragraph also holds the words, unsplit) */
+.cover-letters > span { display: inline-block; }
+/* each word of the title rises through its own mask: while it plays, the mask (clip-path, set
+   by stage.ts) reaches past the glyphs for the accents, the descenders and the italic's lean,
+   and the negative margins give that room back to the line */
+.cover-word { display: inline-block; padding: 0.2em 0.12em 0.26em; margin: -0.2em -0.12em -0.26em; }
+.cover-word > span { display: inline-block; }
+
+/* -- "La prova": its image is uncovered like a curtain once it has loaded (stage.ts) ---------- */
+.draft .draft-image { animation: none; }
+
+/* -- the generation stages ----------------------------------------------------------------- */
+.viewport .progress { animation: ov-progress-in var(--dur-base) var(--ease-out) both; }
+.progress .progress-image img { animation: none; } /* the curtain, as for "La prova" */
+.stage { position: relative; }
+/* a soft halo of gold behind the numeral of the stage at work (it blooms when the stage starts) */
+.stage-glow {
+  position: absolute; z-index: -1; left: -10px; top: 50%; width: 30px; height: 30px; margin-top: -15px;
+  border-radius: 50%; pointer-events: none; opacity: 0;
+  background: radial-gradient(closest-side, rgb(160 128 72 / 0.3), rgb(160 128 72 / 0.12) 55%, rgb(160 128 72 / 0));
+}
+.stage.is-active .stage-glow { opacity: 1; }
+/* the bar fills by scaling (stage.ts sets --fill, 0..1), and while the job runs a fine sheen
+   crosses what is done */
+.progress .bar-fill {
+  right: 0; overflow: hidden; transform-origin: 0 50%; transform: scaleX(var(--fill, 0));
+  transition: transform 0.6s var(--ease-out);
+}
+.progress .bar-fill::after {
+  content: ''; position: absolute; inset: 0; transform: translateX(-80%); pointer-events: none;
+  background: linear-gradient(90deg, rgb(251 248 242 / 0) 36%, rgb(251 248 242 / 0.8) 50%, rgb(251 248 242 / 0) 64%);
+  opacity: 0;
+}
+.progress.is-running .bar-fill::after { opacity: 1; animation: ov-sheen 2.6s var(--ease-in-out) infinite; }
+
+/* -- the view dock --------------------------------------------------------------------------- */
+/* the quick views' ink: one block that slides from view to view (stage.ts clips it to the
+   pressed button), with the labels again in the paper colour so they turn as it passes */
+.view-presets { position: relative; }
+.preset-ink {
+  position: absolute; inset: 0; pointer-events: none; clip-path: inset(0 100% 0 0);
+  background: var(--ink); color: var(--paper-hi);
+}
+.preset-ink > span {
+  position: absolute; top: 0; bottom: 0; display: grid; place-items: center;
+  font-family: var(--sans); font-weight: 500; font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; white-space: nowrap;
+}
+.view-presets.has-ink .preset[aria-pressed='true'] { background: transparent; color: var(--muted); }
+
+/* -- the guided tour ------------------------------------------------------------------------- */
+/* the crop marks, as four corners that breathe (tour.ts) instead of one painted layer */
+.tour .tour-spot::before, .tour-spot.motion-ghost::before { content: none; }
+.tour-crop {
+  --c: var(--paper-hi);
+  position: absolute; width: 13px; height: 13px; pointer-events: none;
+  background: linear-gradient(var(--c), var(--c)), linear-gradient(var(--c), var(--c));
+  background-repeat: no-repeat;
+}
+.tour-crop-tl { left: -12px; top: -12px; background-position: 0 100%, 100% 0; background-size: 8px 1px, 1px 8px; }
+.tour-crop-tr { right: -12px; top: -12px; background-position: 100% 100%, 0 0; background-size: 8px 1px, 1px 8px; }
+.tour-crop-bl { left: -12px; bottom: -12px; background-position: 0 0, 100% 100%; background-size: 8px 1px, 1px 8px; }
+.tour-crop-br { right: -12px; bottom: -12px; background-position: 100% 0, 0 100%; background-size: 8px 1px, 1px 8px; }
+.tour-spot.is-empty .tour-crop { display: none; }
+/* the title and the text turn like a page: they slide under the edges of the column */
+.tour-body { position: relative; clip-path: inset(-6px 0); }
+.tour-echo { position: absolute; inset: 0; pointer-events: none; }
+/* each segment of the progress is a hairline track that its ink is drawn over */
+.tour .tour-progress > span { position: relative; background: var(--rule-strong); }
+.tour-ink { position: absolute; inset: 0; background: var(--ink-2); transform: scaleX(0); transform-origin: 0 50%; }
+.tour-progress > .is-done > .tour-ink { transform: none; }
+.tour-progress > .is-current > .tour-ink { transform: none; background: var(--ink); }
+
+/* -- toasts ---------------------------------------------------------------------------------- */
+.toasts > .toast { position: relative; animation: ov-toast-in var(--dur-base) var(--ease-spring) both; }
+/* the time left, a hairline that runs out (toast.ts sets --toast-life) */
+.toast-timer {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 1px; pointer-events: none;
+  background: rgb(251 248 242 / 0.4); transform-origin: 0 50%;
+  animation: ov-toast-life var(--toast-life, 4200ms) linear both;
+}
+
+/* -- drop anywhere ----------------------------------------------------------------------------- */
+.drop-overlay { animation: ov-fade var(--dur-short) var(--ease-out) both; }
+.drop-overlay-card { position: relative; border-color: transparent; animation: ov-card-in var(--dur-slow) var(--ease-out) both; }
+/* the dashed frame, drawn again so that its dashes can march */
+.drop-frame { position: absolute; inset: -1px; width: calc(100% + 2px); height: calc(100% + 2px); overflow: hidden; pointer-events: none; }
+.drop-frame rect { fill: none; stroke: var(--ink); stroke-width: 2; stroke-dasharray: 4 4; animation: ov-march 0.8s linear infinite; }
+.drop-overlay-card .seal { animation: ov-seal-in var(--dur-hero) var(--ease-out) both; }
+.drop-overlay-card .kicker { animation: ov-fade var(--dur-base) ease 160ms both; }
+.drop-overlay-title { animation: ov-rise var(--dur-slow) var(--ease-out) 110ms both; }
+.drop-overlay-card .meta { animation: ov-rise var(--dur-slow) var(--ease-out) 220ms both; }
+
+/* -- the phone tab bar: one ink line that slides to the pressed tab (main.ts) ------------------ */
+.tabbar { position: relative; }
+.tabbar-ink { position: absolute; top: 0; left: 0; height: 1px; background: var(--ink); opacity: 0; pointer-events: none; transform-origin: 50% 0; }
+.tabbar.has-ink .tabbar-btn[aria-pressed='true'] { box-shadow: none; }
+
+@media (max-width: 1023px) {
+  /* the toasts sit at the bottom (at the top while a sheet is open): they come from there */
+  .toasts > .toast { animation-name: ov-toast-up; }
+  body.has-sheet .toasts > .toast { animation-name: ov-toast-down; }
+}
+
+@keyframes ov-fade { from { opacity: 0; } }
+@keyframes ov-rise { from { opacity: 0; transform: translateY(14px); } }
+@keyframes ov-card-in { from { opacity: 0; transform: translateY(8px) scale(0.975); } }
+@keyframes ov-seal-in { from { opacity: 0; transform: rotate(-28deg) scale(0.78); } }
+@keyframes ov-march { to { stroke-dashoffset: -8; } }
+@keyframes ov-progress-in { from { opacity: 0; translate: 0 28px; } }
+@keyframes ov-sheen { 0% { transform: translateX(-80%); } 62%, 100% { transform: translateX(80%); } }
+@keyframes ov-toast-in { from { opacity: 0; transform: translateX(-34px); } }
+@keyframes ov-toast-up { from { opacity: 0; transform: translateY(22px); } }
+@keyframes ov-toast-down { from { opacity: 0; transform: translateY(-22px); } }
+@keyframes ov-toast-life { to { transform: scaleX(0); } }

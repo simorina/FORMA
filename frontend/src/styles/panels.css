@@ -1,0 +1,77 @@
+/*
+ * Forma — the panels' motion: the left and right panels and the top bar. Sliding indicators
+ * under the choices, views and lists that come in, the report that draws itself, values that
+ * flash when they change. The script plays it (ui/print.ts, create.ts, edit.ts, topbar.ts with
+ * lib/motion.ts); this file holds the pieces it moves. Same durations and curves as the rest of
+ * the house (--dur-*, --ease-* in app.css), transforms, opacity and clip-path only, and
+ * prefers-reduced-motion stops it all (the rule at the end of app.css).
+ */
+
+/* -- sliding indicators: one aria-hidden element per group, gliding from choice to choice ---- */
+.has-glide { position: relative; }
+.glide { position: absolute; left: 0; top: 0; pointer-events: none; transform-origin: 0 0; }
+.glide-fill { background: var(--ink); }
+/* the tabs' underline, where the selected tab drew its own */
+.glide-line { top: auto; bottom: -1px; height: 1px; background: var(--ink); }
+.tabs.has-glide .tab[aria-selected='true']::after { content: none; }
+/* the swatches' selection ring, where the selected swatch drew its outline (focus keeps its own) */
+.glide-ring { border: 1px solid var(--ink); border-radius: 999px; }
+.swatches.has-glide > .swatch[aria-checked='true']:not(:focus-visible) { outline-color: transparent; }
+
+/*
+ * Segmented controls, tools and falloffs: the indicator is the chosen cell's ink, the labels stay
+ * above it and keep their colours. Layers, in the group's own stacking context: the hairlines
+ * (the group's background, through the 1px gaps); the cells' paper (a ::before, z-index -1);
+ * the patch, paper under the chosen cell, placed at once so that the ink glides over paper;
+ * the ink; then the cells with their labels, and the hover tint of the cells not chosen. The
+ * chosen cell has no fill of its own, so it shows the ink even while it is pressed (a cell with
+ * a transform paints as one layer: keys.ts presses the chosen tool when G, S or I is pressed).
+ */
+:is(.segmented, .tools, .falloffs).has-glide { isolation: isolate; }
+:where(.has-glide) > :is(.seg, .tool, .falloff) { position: relative; background: transparent; }
+:is(.segmented, .tools, .falloffs).has-glide > :is(.seg, .tool, .falloff)[aria-checked='true'] { background: transparent; }
+:is(.segmented, .tools, .falloffs).has-glide > :is(.seg, .tool, .falloff)::before {
+  content: ''; position: absolute; inset: 0; z-index: -1; pointer-events: none; background: var(--paper-hi);
+}
+:is(.segmented, .tools, .falloffs).has-glide > :is(.seg, .tool, .falloff)[aria-checked='true']::before { background: transparent; }
+.glide-patch { background: var(--paper-hi); }
+/* the labels turn as the ink arrives */
+.falloffs.has-glide > .falloff { transition: color var(--dur-micro) ease; }
+.tools.has-glide kbd { transition: background-color var(--dur-micro) ease, color var(--dur-micro) ease, border-color var(--dur-micro) ease; }
+
+/* -- values that changed: an ink underline draws under them and fades (played on ::after) ----- */
+.flash { position: relative; }
+.flash::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: -3px; height: 1px; pointer-events: none;
+  background: var(--ink); opacity: 0; transform-origin: 0 50%;
+}
+.kv dd.flash::after, .spool-est dd.flash::after { bottom: -2px; }
+.spool-est dd.flash, .spool-of.flash { width: fit-content; } /* the line is as long as the words */
+.spool-grams.flash::after { bottom: 1px; }
+
+/* -- the bed plan: the footprint scales into place from its centre ------------------------------ */
+.bed-plan rect { transform-box: fill-box; transform-origin: 50% 50%; }
+.bed-plan .plan-bed { vector-effect: non-scaling-stroke; }
+
+/* -- the prompt: an example is written in, left to right, behind a fine ink line --------------- */
+.prompt-field { position: relative; }
+.prompt-veil, .prompt-quill { position: absolute; top: 2px; bottom: 2px; pointer-events: none; opacity: 0; }
+.prompt-veil { left: 2px; right: 2px; background: var(--paper-lo); }
+.prompt-quill { left: 0; width: 1px; background: var(--ink); }
+
+/* -- history: the current model's rule draws down; thumbnails fade up as they load ------------- */
+.history > .history-row { position: relative; }
+.history > .history-row.is-current { box-shadow: none; }
+.history > .history-row::before {
+  content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; pointer-events: none;
+  background: var(--ink); clip-path: inset(0 0 100% 0);
+  transition: clip-path var(--dur-base) var(--ease-out);
+}
+.history > .history-row.is-current::before { clip-path: inset(0); }
+.history .thumb { transition: opacity var(--dur-slow) var(--ease-out), transform var(--dur-slow) var(--ease-out); }
+.history .thumb.is-loading { opacity: 0; transform: translateY(5px); }
+
+/* -- top bar: the status changes colour softly; its dot breathes while something is cooking ---- */
+.topbar .pill { transition: color var(--dur-base) var(--ease-out); }
+.topbar .pill.is-busy::before { animation: pill-breathe 1.8s var(--ease-in-out) infinite; }
+@keyframes pill-breathe { 50% { opacity: 0.25; transform: scale(0.6); } }
