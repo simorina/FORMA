@@ -152,9 +152,10 @@ class JobManager:
         job = Job(id=uuid.uuid4().hex[:12], prompt=prompt, provider=provider_name, model=params.model)
         with self._lock:
             self.jobs[job.id] = job
-            # keep memory bounded
+            # keep memory bounded: forget the oldest *finished* jobs only
             if len(self.jobs) > 200:
-                for old in sorted(self.jobs.values(), key=lambda j: j.created_at)[:50]:
+                finished = [j for j in self.jobs.values() if j.status in ("done", "error")]
+                for old in sorted(finished, key=lambda j: j.created_at)[:50]:
                     self.jobs.pop(old.id, None)
         self._pool.submit(self._run, job, image, params, settings)
         return job

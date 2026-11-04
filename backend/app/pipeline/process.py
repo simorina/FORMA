@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
@@ -13,12 +14,13 @@ import trimesh
 from scipy import ndimage
 
 from .repair import (
+    fill_surface,
     from_manifold,
     grid_to_mesh,
     make_watertight,
     remove_debris,
     to_manifold,
-    voxelize_solid,
+    voxelize_surface,
 )
 from .report import printability_report
 
@@ -27,8 +29,10 @@ StepFn = Callable[[str, float], None]
 
 @dataclass
 class PrintSettings:
-    target_size_mm: float = 100.0  # size of the largest dimension
-    orientation: str = "upright"  # "upright" | "flat" | "keep"
+    target_size_mm: float = 100.0  # size of the largest dimension (base plate included)
+    # "upright": as generated, levelled if it stands on a slightly tilted base;
+    # "flat": largest flat face on the bed; "keep": untouched.
+    orientation: str = "upright"
     hollow: bool = False
     wall_mm: float = 2.0
     base_plate: bool = False
@@ -41,6 +45,7 @@ class PrintSettings:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> PrintSettings:
+        """Coerce and clamp user input. Raises ValueError (Italian) on unusable values."""
         data = data or {}
         fields = cls.__dataclass_fields__
         kwargs: dict[str, Any] = {}
@@ -48,12 +53,21 @@ class PrintSettings:
             if key not in fields or value is None:
                 continue
             kind = fields[key].type
-            if kind in ("float", float):
-                value = float(value)
-            elif kind in ("int", int):
-                value = int(value)
-            elif kind in ("bool", bool):
-                value = value if isinstance(value, bool) else str(value).lower() in ("1", "true", "yes")
+            try:
+                if kind in ("float", float, "int", int):
+                    if isinstance(value, bool):
+                        raise ValueError(key)
+                    number = float(value)
+                    if not math.isfinite(number):
+                        raise ValueError(key)
+                    value = int(round(number)) if kind in ("int", int) else number
+                elif kind in ("bool", bool):
+                    value = value if isinstance(value, bool) else str(value).lower() in (
+                        "1", "true", "yes", "on")
+                else:
+                    value = str(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"Impostazione non valida: {key} = {value!r}") from exc
             kwargs[key] = value
         s = cls(**kwargs)
         s.target_size_mm = float(np.clip(s.target_size_mm, 5.0, 500.0))
@@ -89,24 +103,76 @@ def to_z_up(mesh: trimesh.Trimesh, up: str) -> trimesh.Trimesh:
     return mesh
 
 
-def orient_flat(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
-    """Rotate so the largest flat region of the convex hull rests on the bed."""
+def _hull_regions(mesh: trimesh.Trimesh) -> tuple[np.ndarray, np.ndarray, float]:
+    """Planar regions of the convex hull: (normals (n, 3), areas (n,), hull area)."""
     hull = mesh.convex_hull
-    candidates: list[tuple[float, np.ndarray]] = []
-    for facet, area in zip(hull.facets, hull.facets_area, strict=False):
-        candidates.append((float(area), hull.face_normals[facet[0]]))
+    normals = [hull.face_normals[f[0]] for f in hull.facets]
+    areas = [float(a) for a in hull.facets_area]
     in_facet = np.zeros(len(hull.faces), dtype=bool)
     for facet in hull.facets:
         in_facet[facet] = True
     for i in np.nonzero(~in_facet)[0]:
-        candidates.append((float(hull.area_faces[i]), hull.face_normals[i]))
-    if not candidates:
-        return mesh
-    _, normal = max(candidates, key=lambda c: c[0])
-    rot = trimesh.geometry.align_vectors(normal, [0, 0, -1])
+        normals.append(hull.face_normals[i])
+        areas.append(float(hull.area_faces[i]))
+    return np.asarray(normals, dtype=float).reshape(-1, 3), np.asarray(areas), float(hull.area)
+
+
+def minimal_rotation(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """4x4 rotation taking direction ``a`` onto ``b`` by the smallest angle.
+
+    Unlike trimesh.geometry.align_vectors (any rotation that maps a to b), this keeps
+    the object's heading: levelling a tilted model does not also spin it around Z."""
+    a = np.asarray(a, dtype=float) / np.linalg.norm(a)
+    b = np.asarray(b, dtype=float) / np.linalg.norm(b)
+    axis = np.cross(a, b)
+    sin, cos = float(np.linalg.norm(axis)), float(np.dot(a, b))
+    if sin < 1e-9:
+        if cos > 0:
+            return np.eye(4)
+        helper = [1.0, 0.0, 0.0] if abs(a[0]) < 0.9 else [0.0, 1.0, 0.0]
+        return trimesh.transformations.rotation_matrix(math.pi, np.cross(a, helper))
+    return trimesh.transformations.rotation_matrix(math.atan2(sin, cos), axis)
+
+
+def _rest_on(mesh: trimesh.Trimesh, normal: np.ndarray) -> trimesh.Trimesh:
     out = mesh.copy()
-    out.apply_transform(rot)
+    out.apply_transform(minimal_rotation(normal, [0, 0, -1]))
     return out
+
+
+def orient_flat(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+    """Rotate so the largest flat region of the convex hull rests on the bed."""
+    normals, areas, _ = _hull_regions(mesh)
+    if not len(areas):
+        return mesh
+    return _rest_on(mesh, normals[int(np.argmax(areas))])
+
+
+def level_upright(
+    mesh: trimesh.Trimesh, max_tilt_deg: float = 35.0, min_area_frac: float = 0.02
+) -> tuple[trimesh.Trimesh, float]:
+    """Keep the generated pose but level a slightly tilted base.
+
+    Image->3D models (Pixal3D in particular, which is camera-aligned) return objects
+    tilted by the photo's elevation. If a real flat region of the hull faces down within
+    ``max_tilt_deg``, rotate it onto the bed. Round bottoms are left alone.
+    Returns (mesh, tilt corrected in degrees).
+    """
+    normals, areas, hull_area = _hull_regions(mesh)
+    if not len(areas) or hull_area <= 0:
+        return mesh, 0.0
+    down = -normals[:, 2]  # cos of the angle with -Z
+    ok = down >= math.cos(math.radians(max_tilt_deg))
+    if not ok.any():
+        return mesh, 0.0
+    score = np.where(ok, areas * down**2, -1.0)  # prefer large, then level regions
+    best = int(np.argmax(score))
+    if areas[best] < min_area_frac * hull_area:
+        return mesh, 0.0
+    tilt = math.degrees(math.acos(float(np.clip(down[best], -1.0, 1.0))))
+    if tilt < 0.5:
+        return mesh, 0.0
+    return _rest_on(mesh, normals[best]), tilt
 
 
 def place_on_bed(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
@@ -126,16 +192,35 @@ def scale_to(mesh: trimesh.Trimesh, target_mm: float) -> trimesh.Trimesh:
     return mesh
 
 
-def hollow(mesh: trimesh.Trimesh, wall_mm: float, max_cells: int = 200) -> trimesh.Trimesh | None:
-    """Subtract an inward offset (voxel distance field) to leave walls of ``wall_mm``."""
+def hollow(
+    mesh: trimesh.Trimesh, wall_mm: float, max_cells: int = 200, core_faces: int = 60_000
+) -> trimesh.Trimesh | None:
+    """Subtract an inward offset to leave walls of at least ``wall_mm``.
+
+    The wall is measured from samples of the *real* surface, not from the voxelized
+    solid: closing the solid fills narrow crevices (folds, fingers), and a cavity
+    sized on the filled solid would cut through the wall at the bottom of them.
+    """
     extent = float(mesh.extents.max())
     pitch = max(min(wall_mm / 3.0, extent / 120.0), extent / max_cells)
-    grid, origin = voxelize_solid(mesh, pitch)
-    dist = ndimage.distance_transform_edt(grid) * pitch
-    inner = dist > (wall_mm + pitch * 0.5)
+    surface, origin = voxelize_surface(mesh, pitch)
+    solid = fill_surface(surface)
+    dist = ndimage.distance_transform_edt(~surface) * pitch  # to the nearest surface sample
+    inner = solid & (dist > wall_mm + pitch * 0.5)
+    # Drop specks: cavities of a few voxels add shells without saving material.
+    labels, n = ndimage.label(inner)
+    if n == 0:
+        return None
+    sizes = ndimage.sum(inner, labels, index=np.arange(1, n + 1))
+    keep_ids = np.nonzero(sizes >= max(27, 0.002 * sizes.max()))[0] + 1
+    inner = np.isin(labels, keep_ids)
     if inner.sum() < 8:
         return None
     core = grid_to_mesh(inner, origin, pitch, smooth=6)
+    if len(core.faces) > core_faces:  # the cavity needs no fine detail
+        smaller = decimate(core, core_faces)
+        if to_manifold(smaller) is not None:
+            core = smaller
     outer_m, core_m = to_manifold(mesh), to_manifold(core)
     if outer_m is None or core_m is None:
         return None
@@ -211,6 +296,10 @@ def process_mesh(
     if s.orientation == "flat":
         work = orient_flat(work)
         steps.append("appoggiato sulla faccia più ampia")
+    elif s.orientation == "upright":
+        work, tilt = level_upright(work)
+        if tilt:
+            steps.append(f"base livellata ({tilt:.0f}°)")
     work = scale_to(place_on_bed(work), s.target_size_mm)
 
     if s.hollow:
@@ -226,6 +315,9 @@ def process_mesh(
         notify("Base", 0.72)
         work = add_base_plate(place_on_bed(work), s.base_thickness_mm, s.base_margin_mm)
         steps.append(f"base {s.base_thickness_mm:g} mm aggiunta")
+        # The requested size is the size of the whole print, plate included.
+        if work.extents.max() > s.target_size_mm * 1.0005:
+            work = scale_to(work, s.target_size_mm)
 
     if s.decimate and len(work.faces) > s.target_faces:
         notify("Semplificazione", 0.82)

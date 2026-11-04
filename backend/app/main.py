@@ -43,6 +43,13 @@ def _parse_json(raw: str | None, what: str) -> dict[str, Any]:
     return data
 
 
+def _print_settings(raw: str | None) -> PrintSettings:
+    try:
+        return PrintSettings.from_dict(_parse_json(raw, "settings"))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
 async def _read_upload(upload: UploadFile) -> bytes:
     data = await upload.read(MAX_UPLOAD + 1)
     if len(data) > MAX_UPLOAD:
@@ -102,6 +109,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             try:
                 pil = Image.open(io.BytesIO(raw))
                 pil.load()
+            except Image.DecompressionBombError as exc:
+                raise HTTPException(422, "Immagine troppo grande in pixel") from exc
             except (UnidentifiedImageError, OSError) as exc:
                 raise HTTPException(422, "Immagine non riconosciuta (usa PNG, JPG o WEBP)") from exc
             if max(pil.size) > 2048:
@@ -118,9 +127,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(409, reason)
         if quality not in ("draft", "standard", "high"):
             quality = "standard"
+        print_settings = _print_settings(settings_json)
         params = GenParams(model=model or None, seed=seed, quality=quality)
-        job = jobs.submit(prompt or None, pil, prov.name, params, PrintSettings.from_dict(
-            _parse_json(settings_json, "settings")))
+        job = jobs.submit(prompt or None, pil, prov.name, params, print_settings)
         return {"job_id": job.id, "job": job.to_dict()}
 
     @app.get("/api/jobs/{job_id}")
@@ -142,7 +151,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         - only ``model_id``: re-process its original source with new settings (in place);
         - ``file`` (+ optional ``model_id`` as parent): store as a new model, then process.
         """
-        print_settings = PrintSettings.from_dict(_parse_json(settings_json, "settings"))
+        print_settings = _print_settings(settings_json)
         if file is not None and file.filename:
             raw = await _read_upload(file)
             ext = Path(file.filename).suffix.lower().lstrip(".")

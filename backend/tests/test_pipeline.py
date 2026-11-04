@@ -1,11 +1,27 @@
+import math
+
 import numpy as np
 import pytest
 import trimesh
 
 from app.pipeline import PLA_DENSITY, PrintSettings, process_mesh
-from app.pipeline.process import Y_UP_TO_Z_UP, orient_flat, to_z_up
-from app.pipeline.repair import make_watertight, voxel_remesh
+from app.pipeline.process import Y_UP_TO_Z_UP, level_upright, orient_flat, to_z_up
+from app.pipeline.repair import (
+    analyze_shells,
+    count_bodies,
+    make_watertight,
+    voxel_remesh,
+    winding_number,
+)
 from app.pipeline.report import overhang_fraction, printability_report
+
+
+def hollow_box(outer=40.0, wall=4.0):
+    """Closed box with an inward-facing cavity, like a hollowed print."""
+    box = trimesh.creation.box((outer,) * 3)
+    cavity = trimesh.creation.box((outer - 2 * wall,) * 3)
+    cavity.invert()
+    return trimesh.util.concatenate([box, cavity])
 
 
 def test_scale_to_target_and_drop_to_bed():
@@ -136,3 +152,98 @@ def test_settings_from_dict_coerces_and_clamps():
 def test_empty_mesh_rejected():
     with pytest.raises(ValueError):
         process_mesh(trimesh.Trimesh())
+
+
+@pytest.mark.parametrize("bad", [{"target_faces": "abc"}, {"target_size_mm": float("nan")},
+                                 {"wall_mm": float("inf")}, {"target_size_mm": True}])
+def test_settings_from_dict_rejects_garbage(bad):
+    with pytest.raises(ValueError, match="Impostazione non valida"):
+        PrintSettings.from_dict(bad)
+
+
+def test_settings_accept_numeric_strings():
+    s = PrintSettings.from_dict({"target_faces": "12000.0", "base_plate": "on"})
+    assert s.target_faces == 12000 and s.base_plate is True
+
+
+def test_winding_number_inside_outside():
+    tris = trimesh.creation.box((2, 2, 2)).triangles
+    assert winding_number(np.zeros(3), tris) == pytest.approx(1.0, abs=1e-6)
+    assert winding_number(np.array([5.0, 0, 0]), tris) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_shell_nesting_and_bodies():
+    hb = hollow_box()
+    shells = sorted(analyze_shells(hb), key=lambda s: s.depth)
+    assert [s.depth for s in shells] == [0, 1]
+    assert shells[0].volume > 0 > shells[1].volume
+    assert count_bodies(hb) == 1
+    other = trimesh.creation.box()
+    other.apply_translation([3, 0, 0])
+    two = trimesh.util.concatenate([trimesh.creation.box(), other])
+    assert count_bodies(two) == 2
+
+
+def test_cleanup_keeps_cavity_and_fixes_inverted_hollow():
+    hb = hollow_box()
+    res = process_mesh(hb, PrintSettings(target_size_mm=40))
+    expected = (40**3 - 32**3) / 1000
+    assert res.report["volume_cm3"] == pytest.approx(expected, rel=1e-3)
+    assert res.report["components"] == 1
+    hb.invert()  # both shells flipped: outer inward, cavity outward
+    res = process_mesh(hb, PrintSettings(target_size_mm=40))
+    assert res.report["volume_cm3"] == pytest.approx(expected, rel=1e-3)
+
+
+def test_reprocessing_a_hollowed_model_keeps_it_hollow():
+    sphere = trimesh.creation.icosphere(subdivisions=4)
+    hollowed = process_mesh(sphere, PrintSettings(target_size_mm=60, hollow=True, wall_mm=3))
+    assert hollowed.report["components"] == 1
+    again = process_mesh(hollowed.mesh.copy(), PrintSettings(target_size_mm=60))
+    assert again.report["volume_cm3"] == pytest.approx(hollowed.report["volume_cm3"], rel=0.03)
+
+
+def test_hollow_does_not_breach_narrow_crevices():
+    """A 0.5 mm slot, 25 mm deep: the cavity must keep its wall around the slot too
+    (sizing it on the voxel-closed solid used to cut straight into the slot)."""
+    from app.pipeline.process import hollow
+    from app.pipeline.repair import from_manifold, to_manifold
+
+    block = trimesh.creation.box((60, 60, 60))
+    slot = trimesh.creation.box((0.5, 40, 25))
+    slot.apply_translation([0, 0, 30 - 12.5 + 0.01])
+    slotted = from_manifold(to_manifold(block) - to_manifold(slot))
+    out = hollow(slotted, 2.0)
+    assert out is not None and out.is_watertight
+    shells = analyze_shells(out)
+    assert len(shells) == 2  # outer skin + one sealed cavity
+    assert sorted(s.depth for s in shells) == [0, 1]
+
+
+def test_base_plate_stays_within_target_size():
+    cyl = trimesh.creation.cylinder(radius=10, height=100)
+    res = process_mesh(cyl, PrintSettings(target_size_mm=100, base_plate=True))
+    assert max(res.report["bbox_mm"]) == pytest.approx(100, abs=0.05)
+
+
+def test_upright_levels_a_tilted_base():
+    box = trimesh.creation.box((30, 20, 50))
+    box.apply_transform(trimesh.transformations.rotation_matrix(math.radians(18), [1, 0, 0]))
+    levelled, tilt = level_upright(box)
+    assert tilt == pytest.approx(18, abs=0.5)
+    # minimal rotation: back to the original axes, heading preserved (no spin around Z)
+    assert np.allclose(levelled.extents, [30, 20, 50], atol=1e-6)
+    res = process_mesh(box, PrintSettings(target_size_mm=50))
+    assert res.report["bbox_mm"][2] == pytest.approx(50, abs=1e-3)
+    assert any("livellata" in step for step in res.report["repairs"])
+
+
+def test_upright_leaves_round_and_steep_shapes_alone():
+    _, tilt = level_upright(trimesh.creation.icosphere(subdivisions=3))
+    assert tilt == 0
+    box = trimesh.creation.box((30, 20, 50))
+    box.apply_transform(trimesh.transformations.rotation_matrix(math.radians(45), [1, 0, 0]))
+    _, tilt = level_upright(box)  # every face is 45° off: a pose, not a tilt, keep it
+    assert tilt == 0
+    keep = process_mesh(box, PrintSettings(orientation="keep"))
+    assert not any("livellata" in step for step in keep.report["repairs"])

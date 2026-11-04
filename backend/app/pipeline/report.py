@@ -7,6 +7,8 @@ from typing import Any
 import numpy as np
 import trimesh
 
+from .repair import count_bodies
+
 PLA_DENSITY = 1.24  # g/cm³
 OVERHANG_LIMIT_DEG = 45.0
 
@@ -61,7 +63,8 @@ def printability_report(mesh: trimesh.Trimesh, extra: dict[str, Any] | None = No
         "pla_grams_typical": round(typical_g, 1),
         "overhang_pct": round(over * 100, 1),
         "overhang_warning": over > 0.08,
-        "components": int(len(mesh.split(only_watertight=False))) if len(mesh.faces) < 400000 else 1,
+        # Separate pieces on the bed; the cavity of a hollowed model is not a piece.
+        "components": count_bodies(mesh) if len(mesh.faces) < 1_000_000 else 1,
         "warnings": warnings,
     }
     if extra:
