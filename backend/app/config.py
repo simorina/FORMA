@@ -6,16 +6,30 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+BACKEND_DIR = Path(__file__).resolve().parent.parent
+REPO_ROOT = BACKEND_DIR.parent
+
 
 def _env(name: str, default: str = "") -> str:
     value = os.environ.get(name)
     return value.strip() if value and value.strip() else default
 
 
+def _optional(value: str) -> str:
+    """'none' / 'off' / '0' disable an optional setting."""
+    return "" if value.lower() in ("none", "off", "0", "false") else value
+
+
+def _data_dir(raw: str) -> Path:
+    """DATA_DIR may be relative: resolve it against the repository root, not the CWD,
+    so `make dev`, `cd backend && uv run ...` and Docker all agree on the location."""
+    path = Path(raw).expanduser()
+    return path if path.is_absolute() else (REPO_ROOT / path).resolve()
+
+
 def _load_dotenv() -> None:
     """Minimal .env loader (repo root or backend/), no extra dependency."""
-    here = Path(__file__).resolve().parent
-    for candidate in (here.parent / ".env", here.parent.parent / ".env"):
+    for candidate in (BACKEND_DIR / ".env", REPO_ROOT / ".env"):
         if not candidate.is_file():
             continue
         for raw in candidate.read_text(encoding="utf-8").splitlines():
@@ -35,9 +49,12 @@ class Settings:
     cors_origins: list[str] = field(default_factory=list)
 
     # hf_remote: default image->3D model + Space ids (overridable per model).
-    hf_shape_model: str = "trellis2"
+    hf_shape_model: str = "pixal3d"
+    # Used automatically when the chosen model's Space fails (quota, paused, API change).
+    hf_fallback_model: str = "trellis2"
     hf_space_flux: str = "black-forest-labs/FLUX.1-schnell"
     hf_flux_model: str = "black-forest-labs/FLUX.1-schnell"
+    hf_space_pixal3d: str = "TencentARC/Pixal3D"
     hf_space_trellis2: str = "microsoft/TRELLIS.2"
     hf_space_hunyuan21: str = "tencent/Hunyuan3D-2.1"
     hf_space_hunyuan2mv: str = "tencent/Hunyuan3D-2mv"
@@ -46,7 +63,7 @@ class Settings:
     hf_timeout_s: float = 600.0
 
     # local: CUDA inference.
-    local_shape_model: str = "trellis2"
+    local_shape_model: str = "pixal3d"
     local_device: str = "cuda"
 
     max_workers: int = 2
@@ -58,18 +75,20 @@ class Settings:
         return cls(
             gen_provider=_env("GEN_PROVIDER", "hf_remote"),
             hf_token=_env("HF_TOKEN"),
-            data_dir=Path(_env("DATA_DIR", str(Path(__file__).resolve().parent.parent / "data"))),
+            data_dir=_data_dir(_env("DATA_DIR", str(BACKEND_DIR / "data"))),
             cors_origins=[o.strip() for o in origins.split(",") if o.strip()],
-            hf_shape_model=_env("HF_SHAPE_MODEL", "trellis2"),
+            hf_shape_model=_env("HF_SHAPE_MODEL", cls.hf_shape_model),
+            hf_fallback_model=_optional(_env("HF_FALLBACK_MODEL", cls.hf_fallback_model)),
             hf_space_flux=_env("HF_SPACE_FLUX", cls.hf_space_flux),
             hf_flux_model=_env("HF_FLUX_MODEL", cls.hf_flux_model),
+            hf_space_pixal3d=_env("HF_SPACE_PIXAL3D", cls.hf_space_pixal3d),
             hf_space_trellis2=_env("HF_SPACE_TRELLIS2", cls.hf_space_trellis2),
             hf_space_hunyuan21=_env("HF_SPACE_HUNYUAN21", cls.hf_space_hunyuan21),
             hf_space_hunyuan2mv=_env("HF_SPACE_HUNYUAN2MV", cls.hf_space_hunyuan2mv),
             hf_space_trellis=_env("HF_SPACE_TRELLIS", cls.hf_space_trellis),
             hf_space_step1x=_env("HF_SPACE_STEP1X", cls.hf_space_step1x),
             hf_timeout_s=float(_env("HF_TIMEOUT_S", "600")),
-            local_shape_model=_env("LOCAL_SHAPE_MODEL", "trellis2"),
+            local_shape_model=_env("LOCAL_SHAPE_MODEL", cls.local_shape_model),
             local_device=_env("LOCAL_DEVICE", "cuda"),
             max_workers=int(_env("MAX_WORKERS", "2")),
         )

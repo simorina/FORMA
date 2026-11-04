@@ -10,6 +10,8 @@ from typing import Any
 from ..base import ModelInfo, ProgressFn, ProviderError
 
 ClientFactory = Callable[[str], Any]  # space_id -> gradio_client.Client
+# Optional live status from a Space: returns a short message (or None) while a call runs.
+StatusPoll = Callable[[], "str | None"]
 
 
 def extract_path(result: Any, exts: tuple[str, ...] = ()) -> str | None:
@@ -39,20 +41,34 @@ IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp")
 
 
 def friendly_error(exc: Exception, space: str) -> ProviderError:
+    """Map a raw Space/HTTP failure to an Italian message plus a machine-readable kind.
+
+    kind is one of: quota, auth, unavailable, network, error. Only ``auth`` is
+    considered hopeless for an automatic fallback to another model.
+    """
     text = str(exc)
     low = text.lower()
     if "quota" in low or "zerogpu" in low or "gpu duration" in low:
         return ProviderError(
             f"Quota GPU gratuita di Hugging Face esaurita per {space}. "
-            "Aggiungi HF_TOKEN (meglio se PRO) nel file .env o riprova più tardi."
+            "Aggiungi HF_TOKEN (meglio se PRO) nel file .env o riprova più tardi.",
+            kind="quota",
         )
     if "401" in low or "unauthorized" in low or "invalid token" in low:
-        return ProviderError("HF_TOKEN non valido o senza permessi. Controlla il token su huggingface.co.")
+        return ProviderError(
+            "HF_TOKEN non valido o senza permessi. Controlla il token su huggingface.co.",
+            kind="auth",
+        )
     if "sleeping" in low or "paused" in low or "building" in low or "runtime_error" in low:
-        return ProviderError(f"Lo Space {space} non è attivo in questo momento (in pausa o in avvio).")
+        return ProviderError(
+            f"Lo Space {space} non è attivo in questo momento (in pausa o in avvio).",
+            kind="unavailable",
+        )
     if "could not fetch config" in low or "connect" in low or "resolve" in low or "timed out" in low:
-        return ProviderError(f"Impossibile raggiungere lo Space {space}: controlla la connessione.")
-    return ProviderError(f"Errore dallo Space {space}: {text[:300]}")
+        return ProviderError(
+            f"Impossibile raggiungere lo Space {space}: controlla la connessione.", kind="network"
+        )
+    return ProviderError(f"Errore dallo Space {space}: {text[:300]}", kind="error")
 
 
 def call(
@@ -63,20 +79,23 @@ def call(
     label: str,
     timeout_s: float,
     span: tuple[float, float] = (0.0, 1.0),
+    poll: StatusPoll | None = None,
     **kwargs: Any,
 ) -> Any:
     """Submit a Gradio job and relay queue/progress updates while waiting."""
     job = client.submit(api_name=api_name, **kwargs)
     start = time.monotonic()
     lo, hi = span
+    last_poll, polled = 0.0, None
     while not job.done():
         if time.monotonic() - start > timeout_s:
             try:
                 job.cancel()
             finally:
-                raise ProviderError(f"Tempo scaduto in attesa di {label}.")
+                raise ProviderError(f"Tempo scaduto in attesa di {label}.", kind="unavailable")
         message = label
         frac = None
+        queued = False
         try:
             status = job.status()
             rank = getattr(status, "rank", None)
@@ -84,6 +103,7 @@ def call(
             eta = getattr(status, "eta", None)
             pdata = getattr(status, "progress_data", None)
             if rank is not None and rank > 0:
+                queued = True
                 message = f"In coda: posizione {rank}" + (f"/{queue_size}" if queue_size else "")
                 if eta:
                     message += f" · ~{int(eta)} s"
@@ -97,6 +117,16 @@ def call(
                     message = f"{label} · {desc}"
         except Exception:  # status() is best effort
             pass
+        if poll is not None and not queued:
+            now = time.monotonic()
+            if now - last_poll > 1.5:
+                last_poll = now
+                try:
+                    polled = poll()
+                except Exception:  # live status is best effort too
+                    polled = None
+            if polled:
+                message = f"{label} · {polled}"
         elapsed = time.monotonic() - start
         if frac is None:
             # Ease towards the end of the span while we wait.
@@ -112,12 +142,15 @@ class ShapeEndpoint(ABC):
     description: str = ""
     license: str = ""
     settings_attr: str = ""  # Settings field holding the Space id
+    # Short Italian notes shown next to the model in the UI (licence, quota, ...).
+    notes: tuple[str, ...] = ()
 
     def space_id(self, settings: Any) -> str:
         return getattr(settings, self.settings_attr)
 
     def info(self, default: bool = False) -> ModelInfo:
-        return ModelInfo(self.key, self.label, self.description, self.license, default)
+        return ModelInfo(self.key, self.label, self.description, self.license, default,
+                         list(self.notes))
 
     @abstractmethod
     def run(

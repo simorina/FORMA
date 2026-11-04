@@ -17,8 +17,15 @@ OCTREE = {"draft": 256, "standard": 384, "high": 512}
 STEPS = {"draft": 20, "standard": 30, "high": 50}
 
 
+EU_NOTE = (
+    "Licenza Tencent: non concede diritti nell'Unione Europea (Italia inclusa), nel Regno "
+    "Unito e in Corea del Sud, nemmeno sull'output. Non usarlo dall'Italia."
+)
+
+
 class _HunyuanBase(ShapeEndpoint):
     multiview = False
+    notes = (EU_NOTE,)
 
     def run(self, client, image_path, seed, quality, progress, timeout_s):
         img = _handle(image_path)

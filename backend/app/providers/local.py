@@ -1,17 +1,23 @@
 """local provider: CUDA inference with weights lazily downloaded/loaded.
 
-Install with ``uv sync --extra gpu`` plus the model's own package (TRELLIS.2
-needs its CUDA extensions; see README). Nothing here is imported unless the
-provider is actually used, so the app runs fine on machines without CUDA.
+Install with ``uv sync --extra gpu`` plus the model's own package (Pixal3D and
+TRELLIS.2 need their CUDA extensions; see README "Linux con GPU"). Nothing here is
+imported unless the provider is actually used, so the app runs fine without CUDA.
+
+Each model follows its upstream inference script (Pixal3D ``inference.py``, TRELLIS.2
+README example) up to the GLB export, so orientation matches the Spaces exactly
+(glTF, Y up).
 """
 
 from __future__ import annotations
 
+import math
+import tempfile
 import threading
+from pathlib import Path
 from typing import Any
 
 import numpy as np
-import trimesh
 
 from ..config import Settings, get_settings
 from .base import (
@@ -23,9 +29,15 @@ from .base import (
     ProviderError,
     as_single_mesh,
     build_image_prompt,
+    load_mesh_file,
 )
 
+HUNYUAN_LICENSE = "Tencent Hunyuan 3D 2.1 Community License (esclusi UE/UK/KR)"
 LOCAL_MODELS = {
+    "pixal3d": ModelInfo(
+        "pixal3d", "Pixal3D", "TencentARC/Pixal3D in locale (≥24 GB VRAM, --low_vram ~16 GB).",
+        "MIT",
+    ),
     "trellis2": ModelInfo(
         "trellis2", "TRELLIS.2 · 4B", "microsoft/TRELLIS.2-4B in locale (≥24 GB VRAM).", "MIT"
     ),
@@ -33,8 +45,34 @@ LOCAL_MODELS = {
         "hunyuan3d-2.1",
         "Hunyuan3D 2.1",
         "tencent/Hunyuan3D-2.1 (solo shape, ~10 GB VRAM).",
-        "Tencent Hunyuan 3D 2.1 Community License (esclusi UE/UK/KR)",
+        HUNYUAN_LICENSE,
+        notes=["Licenza Tencent: non valida nell'Unione Europea (Italia inclusa)."],
     ),
+}
+
+# Pixal3D image-conditioning models (upstream inference.py).
+PIXAL3D_COND = {
+    "ss": {"image_size": 512, "grid_resolution": 16},
+    "shape_512": {"image_size": 512, "grid_resolution": 32, "use_naf_upsample": True,
+                  "naf_target_size": 512},
+    "shape_1024": {"image_size": 1024, "grid_resolution": 64, "use_naf_upsample": True,
+                   "naf_target_size": 512},
+    "tex_1024": {"image_size": 1024, "grid_resolution": 64, "use_naf_upsample": True,
+                 "naf_target_size": 1024},
+}
+DINOV3 = "camenduru/dinov3-vitl16-pretrain-lvd1689m"
+MOGE = "Ruicheng/moge-2-vitl"
+# Pixal3D/TRELLIS.2 GLB export: o_voxel's to_glb output, then Pixal3D's extra rotation.
+PIXAL3D_GLB_ROT = np.array(
+    [[-1, 0, 0, 0], [0, 0, -1, 0], [0, -1, 0, 0], [0, 0, 0, 1]], dtype=np.float64
+)
+SAMPLERS = {
+    "sparse_structure_sampler_params": {"steps": 12, "guidance_strength": 7.5,
+                                        "guidance_rescale": 0.7, "rescale_t": 5.0},
+    "shape_slat_sampler_params": {"steps": 12, "guidance_strength": 7.5,
+                                  "guidance_rescale": 0.5, "rescale_t": 3.0},
+    "tex_slat_sampler_params": {"steps": 12, "guidance_strength": 1.0,
+                                "guidance_rescale": 0.0, "rescale_t": 3.0},
 }
 
 
@@ -48,21 +86,20 @@ class LocalProvider(Provider):
         self._lock = threading.Lock()
         self._flux: Any = None
         self._shape: dict[str, Any] = {}
+        self._moge: Any = None
 
     def models(self) -> list[ModelInfo]:
         default = self.settings.local_shape_model
         return [
-            ModelInfo(m.key, m.label, m.description, m.license, m.key == default)
+            ModelInfo(m.key, m.label, m.description, m.license, m.key == default, list(m.notes))
             for m in LOCAL_MODELS.values()
         ]
 
     def available(self) -> tuple[bool, str]:
         try:
-            import torch  # noqa: F401
+            import torch
         except ImportError:
             return False, "PyTorch non installato: esegui `uv sync --extra gpu`."
-        import torch
-
         if not torch.cuda.is_available():
             return False, "Nessuna GPU CUDA disponibile."
         return True, ""
@@ -85,7 +122,26 @@ class LocalProvider(Provider):
     def _load_shape(self, key: str) -> Any:
         if key in self._shape:
             return self._shape[key]
-        if key == "trellis2":
+        if key == "pixal3d":
+            try:
+                from pixal3d.pipelines import Pixal3DImageTo3DPipeline  # type: ignore
+                from pixal3d.trainers.flow_matching.mixins.image_conditioned_proj import (  # type: ignore
+                    DinoV3ProjFeatureExtractor,
+                )
+            except ImportError as exc:
+                raise ProviderError(
+                    "Pacchetto pixal3d non trovato: installa Pixal3D da github.com/TencentARC/Pixal3D"
+                ) from exc
+            pipe = Pixal3DImageTo3DPipeline.from_pretrained("TencentARC/Pixal3D")
+            for name, cfg in PIXAL3D_COND.items():
+                cond = DinoV3ProjFeatureExtractor(model_name=DINOV3, **cfg)
+                cond.eval()
+                setattr(pipe, f"image_cond_model_{name}", cond.cuda())
+                if getattr(cond, "use_naf_upsample", False):
+                    cond._load_naf()
+            pipe.low_vram = False
+            pipe.cuda()
+        elif key == "trellis2":
             try:
                 from trellis2.pipelines import Trellis2ImageTo3DPipeline  # type: ignore
             except ImportError as exc:
@@ -106,6 +162,46 @@ class LocalProvider(Provider):
             raise ProviderError(f"Modello locale sconosciuto: {key}")
         self._shape[key] = pipe
         return pipe
+
+    def _pixal3d_camera(self, image_path: str) -> dict[str, float]:
+        """MoGe-2 field of view -> camera distance (upstream get_camera_params_wild_moge)."""
+        import torch
+        from PIL import Image
+
+        if self._moge is None:
+            from moge.model.v2 import MoGeModel  # type: ignore
+
+            self._moge = MoGeModel.from_pretrained(MOGE).cuda().eval()
+        pil = Image.open(image_path).convert("RGB")
+        width = pil.size[0]
+        tensor = torch.from_numpy(np.asarray(pil, dtype=np.float32) / 255.0).permute(2, 0, 1).cuda()
+        with torch.no_grad():
+            out = self._moge.infer(tensor)
+        fx = float(out["intrinsics"].squeeze().cpu().numpy()[0, 0]) * width
+        angle = 2 * math.atan(width / (2 * fx))
+        # distance_from_fov() with grid point (-1, 0, 0), mesh_scale 1, 512 px target.
+        res = 512
+        f_pixels = (16.0 / math.tan(angle / 2.0)) * res / 32.0
+        xw, yw = -0.5, 0.0  # rotated grid point / scale / 2
+        distance = f_pixels * xw / (0 - res / 2.0) - yw
+        return {"camera_angle_x": angle, "distance": distance, "mesh_scale": 1.0}
+
+    def _to_glb_mesh(self, mesh: Any, pipe: Any, res: Any, rotate: bool, quality: str):
+        import o_voxel  # type: ignore
+
+        glb = o_voxel.postprocess.to_glb(
+            vertices=mesh.vertices, faces=mesh.faces, attr_volume=mesh.attrs, coords=mesh.coords,
+            attr_layout=getattr(pipe, "pbr_attr_layout", None) or mesh.layout,
+            grid_size=res, aabb=[[-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]],
+            decimation_target=1_000_000 if quality == "high" else 500_000, texture_size=1024,
+            remesh=True, remesh_band=1, remesh_project=0,
+        )
+        if rotate:
+            glb.apply_transform(PIXAL3D_GLB_ROT)
+        with tempfile.TemporaryDirectory(prefix="forma-") as tmp:
+            path = Path(tmp) / "shape.glb"
+            glb.export(path)
+            return load_mesh_file(str(path))
 
     def generate(self, prompt, image, params: GenParams, progress: ProgressFn = lambda *a: None):
         ok, reason = self.available()
@@ -130,15 +226,23 @@ class LocalProvider(Provider):
             progress("shape", 0.05, "Carico il modello 3D")
             pipe = self._load_shape(key)
             progress("shape", 0.2, "Genero la forma")
-            if key == "trellis2":
-                res = {"draft": "512", "standard": "1024_cascade", "high": "1536_cascade"}
-                outputs = pipe.run(image, seed=int(params.seed),
-                                   pipeline_type=res.get(params.quality, "1024_cascade"))
-                m = outputs[0]
-                verts = m.vertices.detach().cpu().numpy()
-                faces = m.faces.detach().cpu().numpy()
-                mesh = trimesh.Trimesh(verts.astype(np.float64), faces, process=False)
-                up = "z"  # TRELLIS works Z-up internally (its GLB export swaps to Y-up)
+            if key in ("pixal3d", "trellis2"):
+                resolution = {"draft": 1024, "standard": 1536, "high": 1536}.get(params.quality, 1536)
+                processed = pipe.preprocess_image(image)
+                kwargs: dict[str, Any] = dict(SAMPLERS, seed=int(params.seed),
+                                              preprocess_image=False, return_latent=True)
+                if key == "pixal3d":
+                    with tempfile.TemporaryDirectory(prefix="forma-") as tmp:
+                        path = str(Path(tmp) / "pre.png")
+                        processed.save(path)
+                        kwargs["camera_params"] = self._pixal3d_camera(path)
+                    kwargs.update(pipeline_type=f"{resolution}_cascade", max_num_tokens=49152)
+                else:
+                    kwargs["pipeline_type"] = {1024: "1024_cascade", 1536: "1536_cascade"}[resolution]
+                torch.manual_seed(int(params.seed))
+                meshes, (_, _, res) = pipe.run(processed, **kwargs)
+                progress("shape", 0.85, "Estraggo la superficie")
+                mesh = self._to_glb_mesh(meshes[0], pipe, res, key == "pixal3d", params.quality)
             else:
                 try:
                     from hy3dshape.rembg import BackgroundRemover  # type: ignore
@@ -151,7 +255,6 @@ class LocalProvider(Provider):
                 out = pipe(image=image, num_inference_steps=steps,
                            generator=torch.manual_seed(int(params.seed)))
                 mesh = as_single_mesh(out[0])
-                up = "y"
             torch.cuda.empty_cache()
         progress("shape", 1.0, "Forma 3D pronta")
-        return GenerationResult(mesh=mesh, image=image, model=key, meta={"up": up})
+        return GenerationResult(mesh=mesh, image=image, model=key, meta={"up": "y"})

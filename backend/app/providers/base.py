@@ -62,13 +62,27 @@ class ModelInfo:
     description: str
     license: str
     default: bool = False
+    notes: list[str] = field(default_factory=list)  # short Italian notes for the UI
+
+    @property
+    def eu_restricted(self) -> bool:
+        """The licence grants no rights in the EU (the user is in Italy)."""
+        return "esclusi UE" in self.license
 
     def to_dict(self) -> dict[str, Any]:
-        return self.__dict__.copy()
+        return {**self.__dict__, "notes": list(self.notes), "eu_restricted": self.eu_restricted}
 
 
 class ProviderError(RuntimeError):
-    """Raised with a user-facing (Italian) message."""
+    """Raised with a user-facing (Italian) message.
+
+    ``kind`` classifies the failure (quota, auth, unavailable, network, error) so the
+    remote provider can decide whether falling back to another model makes sense.
+    """
+
+    def __init__(self, message: str, kind: str = "error") -> None:
+        super().__init__(message)
+        self.kind = kind
 
 
 class Provider(ABC):

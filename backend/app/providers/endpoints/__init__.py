@@ -14,12 +14,15 @@ from __future__ import annotations
 
 from .common import ShapeEndpoint
 from .hunyuan import Hunyuan2mvEndpoint, Hunyuan21Endpoint
+from .pixal3d import Pixal3DEndpoint
 from .step1x import Step1XEndpoint
 from .trellis import Trellis2Endpoint, TrellisEndpoint
 
+# Ordered by geometry quality for printing (see README, "Scelta del modello").
 SHAPE_ENDPOINTS: dict[str, ShapeEndpoint] = {
     e.key: e
     for e in (
+        Pixal3DEndpoint(),
         Trellis2Endpoint(),
         Hunyuan21Endpoint(),
         Step1XEndpoint(),

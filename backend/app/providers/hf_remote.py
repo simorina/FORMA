@@ -1,7 +1,7 @@
 """hf_remote provider: Hugging Face Spaces / Inference, no local GPU needed.
 
-Text -> FLUX.1-schnell image -> image->3D Space (TRELLIS.2 by default).
-All Space-specific calls live in ``providers/endpoints``.
+Text -> FLUX.1-schnell image -> image->3D Space (Pixal3D by default, TRELLIS.2 as
+automatic fallback). All Space-specific calls live in ``providers/endpoints``.
 """
 
 from __future__ import annotations
@@ -89,10 +89,25 @@ class HFRemoteProvider(Provider):
         except Exception as exc:
             raise friendly_error(exc, s.hf_space_flux) from exc
 
+    def _shape(self, key: str, img_path: Path, params: GenParams, progress: ProgressFn):
+        endpoint = SHAPE_ENDPOINTS[key]
+        space = endpoint.space_id(self.settings)
+        progress("shape", 0.01, f"Connessione a {space}")
+        try:
+            client = self._client_factory(space)
+            mesh_path = endpoint.run(
+                client, str(img_path), params.seed, params.quality, progress,
+                self.settings.hf_timeout_s,
+            )
+            return load_mesh_file(mesh_path), space
+        except ProviderError:
+            raise
+        except Exception as exc:
+            raise friendly_error(exc, space) from exc
+
     def generate(self, prompt, image, params: GenParams, progress: ProgressFn = lambda *a: None):
         key = params.model or self.settings.hf_shape_model
-        endpoint = SHAPE_ENDPOINTS.get(key)
-        if endpoint is None:
+        if key not in SHAPE_ENDPOINTS:
             raise ProviderError(f"Modello sconosciuto: {key}")
         if image is None:
             if not prompt:
@@ -101,21 +116,27 @@ class HFRemoteProvider(Provider):
             image = self._image_from_prompt(prompt, params.seed, progress)
         progress("image", 1.0, "Immagine pronta")
 
-        space = endpoint.space_id(self.settings)
+        meta: dict[str, Any] = {"up": "y"}
         with tempfile.TemporaryDirectory(prefix="forma-") as tmp:
             img_path = Path(tmp) / "input.png"
             image.convert("RGBA" if image.mode in ("RGBA", "LA") else "RGB").save(img_path)
-            progress("shape", 0.01, f"Connessione a {space}")
             try:
-                client = self._client_factory(space)
-                mesh_path = endpoint.run(
-                    client, str(img_path), params.seed, params.quality, progress,
-                    self.settings.hf_timeout_s,
-                )
-            except ProviderError:
-                raise
-            except Exception as exc:
-                raise friendly_error(exc, space) from exc
-            mesh = load_mesh_file(mesh_path)
+                mesh, space = self._shape(key, img_path, params, progress)
+            except ProviderError as exc:
+                fallback = self.settings.hf_fallback_model
+                if (exc.kind == "auth" or not fallback or fallback == key
+                        or fallback not in SHAPE_ENDPOINTS):
+                    raise
+                first = SHAPE_ENDPOINTS[key].label
+                second = SHAPE_ENDPOINTS[fallback].label
+                progress("shape", 0.02, f"{first} non disponibile: passo a {second}")
+                try:
+                    mesh, space = self._shape(fallback, img_path, params, progress)
+                except ProviderError as exc2:
+                    raise ProviderError(f"{exc} Anche {second} non è disponibile: {exc2}",
+                                        kind=exc2.kind) from exc2
+                meta.update(fallback_from=key, fallback_reason=str(exc))
+                key = fallback
+        meta["space"] = space
         progress("shape", 1.0, "Forma 3D ricevuta")
-        return GenerationResult(mesh=mesh, image=image, model=key, meta={"up": "y", "space": space})
+        return GenerationResult(mesh=mesh, image=image, model=key, meta=meta)

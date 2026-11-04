@@ -31,6 +31,7 @@ class Trellis2Endpoint(ShapeEndpoint):
     )
     license = "MIT"
     settings_attr = "hf_space_trellis2"
+    notes = ("Alternativa solida e più leggera: usata in automatico se Pixal3D non risponde.",)
 
     def run(self, client, image_path, seed, quality, progress, timeout_s):
         pre = call(client, "/preprocess_image", progress, "shape", "Scontorno immagine",

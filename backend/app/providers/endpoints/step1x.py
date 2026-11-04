@@ -16,6 +16,7 @@ class Step1XEndpoint(ShapeEndpoint):
     description = "StepFun, 2025. Geometria a SDF con bordi netti, buona per oggetti meccanici."
     license = "Apache-2.0"
     settings_attr = "hf_space_step1x"
+    notes = ("Forza la simmetria sull'asse X: ottimo per oggetti tecnici, meno per quelli organici.",)
 
     def run(self, client, image_path, seed, quality, progress, timeout_s):
         steps = {"draft": 25, "standard": 50, "high": 75}.get(quality, 50)

@@ -23,8 +23,12 @@ def test_providers_list(client):
     assert names == {"hf_remote", "local", "procedural"}
     hf = next(p for p in data["providers"] if p["name"] == "hf_remote")
     keys = [m["key"] for m in hf["models"]]
-    assert keys[0] == "trellis2"
-    assert next(m for m in hf["models"] if m["default"])["key"] == "trellis2"
+    assert keys[:2] == ["pixal3d", "trellis2"]
+    assert next(m for m in hf["models"] if m["default"])["key"] == "pixal3d"
+    by_key = {m["key"]: m for m in hf["models"]}
+    assert by_key["pixal3d"]["license"] == "MIT" and not by_key["pixal3d"]["eu_restricted"]
+    assert by_key["hunyuan3d-2.1"]["eu_restricted"]
+    assert any("Unione Europea" in n for n in by_key["hunyuan3d-2.1"]["notes"])
     assert data["default"] == "procedural"
     assert data["hf_token"] is False
     local = next(p for p in data["providers"] if p["name"] == "local")
@@ -119,6 +123,33 @@ def test_process_rejects_bad_upload(client):
     assert client.post("/api/process", data={"model_id": "abcdefabcdef"}).status_code == 404
 
 
+@pytest.mark.parametrize("bad", ['{"target_faces": "abc"}', '{"target_size_mm": NaN}',
+                                 '{"wall_mm": true}', "[1, 2]", "{not json"])
+def test_invalid_settings_are_422(client, bad):
+    r = client.post("/api/generate", data={"prompt": "cubo", "settings": bad})
+    assert r.status_code == 422, r.text
+    job = wait_job(client, client.post("/api/generate", data={"prompt": "cubo"}).json()["job_id"])
+    r = client.post("/api/process", data={"model_id": job["result"]["id"], "settings": bad})
+    assert r.status_code == 422, r.text
+
+
+def test_edit_of_hollow_model_keeps_cavity(client):
+    """'Ripara e aggiorna' sends back the processed (hollow) mesh: the cavity must survive."""
+    settings = '{"target_size_mm": 60, "hollow": true, "wall_mm": 3}'
+    job = wait_job(client, client.post("/api/generate", data={"prompt": "sfera",
+                                                              "settings": settings}).json()["job_id"])
+    model = job["result"]
+    assert model["report"]["hollowed"] and model["report"]["components"] == 1
+    stl = client.get(f"/api/export/{model['id']}", params={"format": "stl"}).content
+    r = client.post("/api/process", data={"model_id": model["id"],
+                                          "settings": '{"target_size_mm": 60}'},
+                    files={"file": ("edit.stl", stl, "model/stl")})
+    assert r.status_code == 200, r.text
+    edited = r.json()["report"]
+    assert edited["volume_cm3"] == pytest.approx(model["report"]["volume_cm3"], rel=0.05)
+    assert edited["components"] == 1
+
+
 # --- hf_remote with a mocked Gradio client ------------------------------------------------
 
 
@@ -145,26 +176,35 @@ class FakeClient:
         self.tmp = tmp_path
         self.calls = calls
 
+    def _glb(self):
+        p = self.tmp / "out.glb"
+        mesh = trimesh.creation.capsule(height=1.0, radius=0.3)  # tall along Z
+        mesh.apply_transform(trimesh.transformations.rotation_matrix(-1.5707963, [1, 0, 0]))
+        assert mesh.extents[1] == mesh.extents.max()  # now tall along Y, like glTF
+        mesh.export(p)
+        return str(p)
+
     def submit(self, api_name, **kwargs):
         self.calls.append((self.space, api_name, kwargs))
         if api_name == "/infer":
             p = self.tmp / "flux.png"
             Image.new("RGB", (256, 256), (200, 190, 180)).save(p)
             return FakeJob((str(p), 0))
-        if api_name == "/preprocess_image":
+        if api_name in ("/preprocess_image", "/preprocess"):
             p = self.tmp / "pre.png"
             Image.new("RGBA", (256, 256)).save(p)
             return FakeJob(str(p))
         if api_name == "/image_to_3d":
             return FakeJob(({"state": 1}, "<html>"))
+        if api_name == "/generate_3d":  # Pixal3D: state lives in a file on the Space
+            return FakeJob({"render_paths": {}, "state_path": "/tmp/state_1.npz",
+                            "camera_angle_x": 0.7, "distance": 2.0})
+        if api_name == "/extract_glb_api":
+            return FakeJob(self._glb())
         if api_name in ("/extract_glb", "/shape_generation"):
-            p = self.tmp / "out.glb"
-            mesh = trimesh.creation.capsule(height=1.0, radius=0.3)  # tall along Z
-            mesh.apply_transform(trimesh.transformations.rotation_matrix(-1.5707963, [1, 0, 0]))
-            assert mesh.extents[1] == mesh.extents.max()  # now tall along Y, like glTF
-            mesh.export(p)
-            return FakeJob(({"path": str(p)}, str(p)) if api_name == "/extract_glb" else (
-                {"value": str(p)}, "<html>", {}, 1))
+            p = self._glb()
+            return FakeJob(({"path": p}, p) if api_name == "/extract_glb" else (
+                {"value": p}, "<html>", {}, 1))
         raise AssertionError(f"unexpected api {api_name}")
 
 
@@ -177,7 +217,7 @@ def remote(settings, tmp_path):
     return calls
 
 
-@pytest.mark.parametrize("model", ["trellis2", "hunyuan3d-2.1"])
+@pytest.mark.parametrize("model", ["pixal3d", "trellis2", "hunyuan3d-2.1"])
 def test_hf_remote_text_to_3d_mocked(client, remote, model):
     r = client.post("/api/generate", data={"prompt": "un gufo", "provider": "hf_remote",
                                            "model": model, "seed": 7})
@@ -187,14 +227,71 @@ def test_hf_remote_text_to_3d_mocked(client, remote, model):
     assert apis[0] == "/infer"
     flux_prompt = remote[0][2]["prompt"]
     assert flux_prompt.startswith("un gufo") and "single object" in flux_prompt
-    if model == "trellis2":
+    if model == "pixal3d":
+        assert apis[1:] == ["/preprocess", "/generate_3d", "/extract_glb_api"]
+        gen, extract = remote[2][2], remote[3][2]
+        assert gen["seed"] == 7 and gen["resolution"] == 1536 and gen["manual_fov"] == -1.0
+        assert extract["state_path"] == "/tmp/state_1.npz"
+        assert extract["session_id"] == gen["session_id"] != ""
+        assert all(c[0] == "TencentARC/Pixal3D" for c in remote[1:])
+    elif model == "trellis2":
         assert apis[1:] == ["/preprocess_image", "/image_to_3d", "/extract_glb"]
         assert remote[2][2]["seed"] == 7 and remote[2][2]["resolution"] == "1024"
     else:
         assert apis[1:] == ["/shape_generation"]
+    assert job["result"]["model"] == model
     # capsule is Y-up (height along Y) -> after conversion the tallest axis must be Z
     bbox = job["result"]["report"]["bbox_mm"]
     assert bbox[2] == max(bbox)
+
+
+def test_hf_remote_default_model_is_pixal3d(client, remote):
+    r = client.post("/api/generate", data={"prompt": "un gufo", "provider": "hf_remote"})
+    job = wait_job(client, r.json()["job_id"])
+    assert job["status"] == "done", job
+    assert job["result"]["model"] == "pixal3d"
+
+
+class SleepingPixal(FakeClient):
+    """Pixal3D's Space is down; TRELLIS.2's works."""
+
+    def submit(self, api_name, **kwargs):
+        if self.space == "TencentARC/Pixal3D":
+            self.calls.append((self.space, api_name, kwargs))
+            raise RuntimeError("Space is sleeping")
+        return super().submit(api_name, **kwargs)
+
+
+def test_hf_remote_falls_back_to_trellis2(client, settings, tmp_path):
+    calls = []
+    s = Settings(**{**settings.__dict__, "gen_provider": "hf_remote"})
+    register_provider(HFRemoteProvider(
+        s, client_factory=lambda sp: SleepingPixal(sp, tmp_path, calls)))
+    job = wait_job(client, client.post("/api/generate", data={
+        "prompt": "un gufo", "provider": "hf_remote"}).json()["job_id"])
+    assert job["status"] == "done", job
+    result = job["result"]
+    assert result["model"] == "trellis2"
+    assert result["gen_meta"]["fallback_from"] == "pixal3d"
+    assert "non è attivo" in result["gen_meta"]["fallback_reason"]
+    assert [c[1] for c in calls if c[0] == "microsoft/TRELLIS.2"][-1] == "/extract_glb"
+
+
+def test_hf_remote_no_fallback_on_bad_token(client, settings, tmp_path):
+    class BadToken(FakeClient):
+        def submit(self, api_name, **kwargs):
+            if api_name == "/infer":
+                return super().submit(api_name, **kwargs)
+            raise RuntimeError("401 Unauthorized")
+
+    calls = []
+    s = Settings(**{**settings.__dict__, "gen_provider": "hf_remote"})
+    register_provider(HFRemoteProvider(s, client_factory=lambda sp: BadToken(sp, tmp_path, calls)))
+    job = wait_job(client, client.post("/api/generate", data={
+        "prompt": "x", "provider": "hf_remote"}).json()["job_id"])
+    assert job["status"] == "error"
+    assert "HF_TOKEN" in job["error"]
+    assert not any(c[0] == "microsoft/TRELLIS.2" for c in calls)
 
 
 def test_hf_remote_error_is_friendly(client, settings, tmp_path):
@@ -208,6 +305,15 @@ def test_hf_remote_error_is_friendly(client, settings, tmp_path):
     assert job["status"] == "error"
     assert "Quota GPU" in job["error"]
     assert any(s["status"] == "error" for s in job["stages"])
+
+
+def test_pixal3d_stage_names_are_italian():
+    from app.providers.endpoints.pixal3d import _italian_stage, status_poller
+
+    assert _italian_stage("Preprocessing & Camera Estimation") == "stima della camera"
+    assert _italian_stage("Sampling shape SLat") == "campionamento"
+    assert _italian_stage("Something new") == "Something new"
+    assert status_poller(object(), "abc") is None  # no Space URL -> no polling
 
 
 def test_extract_path_variants():
