@@ -10,21 +10,26 @@ modificabile a mano nel browser.
 
 - **Testo → immagine → 3D.** Scrivi cosa vuoi stampare; FLUX.1-schnell crea un'immagine "da
   prodotto" (oggetto singolo, centrato, sfondo neutro). Puoi **approvarla o chiederne un'altra**
-  prima di partire col 3D, il passaggio lento che consuma quota GPU.
+  prima di partire col 3D, il passaggio lento che consuma quota GPU. I prompt in italiano vengono
+  tradotti in inglese per FLUX (con HF_TOKEN), e l'anteprima mostra la frase inviata.
 - **Immagine → 3D** con **Pixal3D** (predefinito) o le alternative: TRELLIS.2, Step1X-3D,
   Hunyuan3D 2.1/2mv, TRELLIS. Se lo Space del modello scelto non risponde, Forma passa da solo a
   TRELLIS.2.
-- **Ripara qualsiasi mesh**: trascina un file STL, OBJ, 3MF, GLB o PLY e viene chiuso, reso
-  manifold e preparato.
+- **Ripara qualsiasi mesh**: trascina un file STL, OBJ, 3MF, GLB o PLY in un punto qualsiasi della
+  finestra (o incollalo) e viene chiuso, reso manifold e preparato. Anche una foto si può
+  trascinare o incollare.
+- **Rinomina** un modello cliccando sul suo nome in alto: il nome passa anche ai file esportati.
 - **Pipeline di stampa**: rimozione dei frammenti, chiusura dei buchi, ricostruzione voxel se
   serve, normali, orientamento (in piedi livellato, **meno supporti**, disteso), scala in mm,
-  svuotamento con pareti misurate dalla superficie vera, base d'appoggio, semplificazione che non
+  **base piana** (taglia il fondo per più presa sul piatto), svuotamento con pareti misurate dalla superficie vera, base d'appoggio, semplificazione che non
   rompe la chiusura.
 - **Resoconto**: grammi di filamento per PLA, PETG, ABS, ASA o TPU con il tuo riempimento,
   bobina e prezzo; metri, costo, stampe per bobina, tempo stimato per la tua stampante, copie per
-  piatto, sbalzi oltre 45°, riparazioni eseguite.
+  piatto, sbalzi oltre 45°, area d'appoggio sul piatto, **parti più sottili di 0,8 mm** (con
+  avviso e fattore d'ingrandimento suggerito), riparazioni eseguite.
 - **Viewport**: luci da studio, ombre morbide, riflesso sul piatto, griglia da 10/50 mm, quote in
-  mm, rivelazione a strati, **mappa degli sbalzi**, **vista in sezione**, verifica del piatto
+  mm, rivelazione a strati, **mappa degli sbalzi**, **vista in sezione**, **viste rapide** (fronte,
+  lato, alto, 3/4), **triangoli della mesh**, verifica del piatto
   (Bambu Lab A1, Prusa MK4, Ender 3 o personalizzata).
 - **Modifica a mano**: sposta con selezione morbida e 5 curve di caduta, leviga, gonfia/sgonfia,
   simmetria X, annulla/ripeti; "Ripara e aggiorna" salva il risultato come nuovo modello.
@@ -67,7 +72,7 @@ Altri modi:
 | `make serve` | Build di produzione servita dal backend: http://localhost:8000 |
 | `make docker` | Immagine CPU con Docker Compose: http://localhost:8000 |
 | `make test` | pytest (backend) e vitest (frontend) |
-| `make e2e` | 18 flussi end-to-end in Chromium su dati temporanei (serve Playwright: `cd frontend && npm i --no-save playwright && npx playwright install chromium`) |
+| `make e2e` | 23 flussi end-to-end in Chromium su dati temporanei (serve Playwright: `cd frontend && npm i --no-save playwright && npx playwright install chromium`) |
 | `make help` | Tutti i comandi |
 
 ### Mac senza GPU (predefinito: `hf_remote`)
@@ -117,7 +122,8 @@ tenere attiva "Mostrami prima l'immagine": il 3D parte solo quando l'immagine ti
    Riparazione → Pronto*. Gli errori compaiono nel pannello, con *Riprova*.
 3. **Controlla il resoconto**: grammi, costo, tempo, sbalzi (tasto O per vederli sul modello), la
    sezione (tasto C) se l'hai svuotato.
-4. **Regola stampante, filamento, dimensione, orientamento, svuotamento, base** e premi *Applica*.
+4. **Regola stampante, filamento, dimensione, orientamento, base piana, svuotamento, base** e premi
+   *Applica*.
    "Adatta al piatto" porta il modello alla misura massima della tua stampante.
 5. **Modifica a mano** se serve (tasto E), poi *Ripara e aggiorna*.
 6. **Scarica il 3MF** (o STL, OBJ, GLB) e aprilo nello slicer.
@@ -134,6 +140,8 @@ tenere attiva "Mostrami prima l'immagine": il 3D parte solo quando l'immagine ti
 | [ · ] (anche − · +) | Raggio del pennello |
 | ⌘/Ctrl Z · ⌘/Ctrl ⇧ Z | Annulla · Ripeti |
 | F | Inquadra il modello |
+| 1 · 2 · 3 · 4 | Vista frontale · laterale · dall'alto · di tre quarti |
+| W | Mostra i triangoli della mesh |
 | O | Mostra gli sbalzi |
 | C | Vista in sezione |
 | Spazio | Rotazione automatica |
@@ -188,16 +196,17 @@ backend/   FastAPI
 | `POST /api/process` | Ripete la preparazione con nuove impostazioni, o ripara una mesh caricata/modificata |
 | `GET /api/export/{id}?format=stl\|3mf\|obj\|glb` | Download |
 | `GET /api/models`, `GET/DELETE /api/models/{id}` | Cronologia |
+| `PATCH /api/models/{id}` | Rinomina (campo `title`; vuoto torna al prompt) |
 
 Configurazione in `.env` (vedi `.env.example`): provider, modello e fallback, Space usati (puoi
 puntare a un tuo duplicato), cartella dei dati.
 
 ## Qualità
 
-- **Backend**: 94 test pytest (pipeline, provider con client Gradio simulato, API, export).
+- **Backend**: 101 test pytest (pipeline, provider con client Gradio simulato, API, export).
 - **Frontend**: 64 test vitest (curve di caduta, saldatura, pennelli, undo/redo, STL, contrasto,
   piatto, materiali e stime).
-- **End-to-end**: 18 flussi in Chromium contro il backend vero (`make e2e`).
+- **End-to-end**: 23 flussi in Chromium contro il backend vero (`make e2e`).
 - La preparazione di una mesh AI da 327.000 triangoli rumorosa e bucata richiede circa 4 s con le
   impostazioni predefinite e 7 s con svuotamento e base, su una CPU da portatile.
 

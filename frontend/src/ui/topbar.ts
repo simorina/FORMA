@@ -52,6 +52,7 @@ export function mountTopbar(root: HTMLElement, app: App): void {
     nameInput.value = c.title ?? app.modelTitle();
     nameBtn.hidden = true;
     nameInput.hidden = false;
+    pill.classList.add('is-hidden-renaming');
     nameInput.focus();
     nameInput.select();
   };
@@ -61,6 +62,7 @@ export function mountTopbar(root: HTMLElement, app: App): void {
     const c = app.state.current;
     nameInput.hidden = true;
     nameBtn.hidden = false;
+    pill.classList.remove('is-hidden-renaming');
     if (save && c) void app.rename(c, nameInput.value);
     nameBtn.focus();
   };
