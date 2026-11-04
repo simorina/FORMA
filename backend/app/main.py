@@ -111,7 +111,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 pil.load()
             except Image.DecompressionBombError as exc:
                 raise HTTPException(422, "Immagine troppo grande in pixel") from exc
-            except (UnidentifiedImageError, OSError) as exc:
+            # PIL raises SyntaxError / ValueError (not OSError) for some corrupt files
+            except (UnidentifiedImageError, OSError, SyntaxError, ValueError) as exc:
                 raise HTTPException(422, "Immagine non riconosciuta (usa PNG, JPG o WEBP)") from exc
             if max(pil.size) > 2048:
                 pil.thumbnail((2048, 2048))
@@ -253,6 +254,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return FileResponse(store.file(model_id, f"{name}.png"), media_type="image/png")
         except KeyError as exc:
             raise HTTPException(404, "Immagine non trovata") from exc
+
+    # Unknown /api paths are a JSON 404, never the frontend's index.html (registered last,
+    # before the static mount, so every real API route above still matches first).
+    @app.api_route("/api/{rest:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+    def api_not_found(rest: str) -> None:
+        raise HTTPException(404, "Endpoint inesistente")
 
     # Serve the built frontend (docker / `make serve`) when present.
     dist = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"

@@ -76,6 +76,13 @@ def test_export_errors(client):
     assert client.get("/api/export/..%2f..?format=stl").status_code == 404
 
 
+def test_unknown_api_path_is_json_404_even_with_built_frontend(client):
+    r = client.get("/api/does-not-exist")
+    assert r.status_code == 404
+    assert r.headers["content-type"].startswith("application/json")
+    assert client.post("/api/models/abc/oops").status_code == 404
+
+
 def test_generate_requires_input(client):
     assert client.post("/api/generate", data={"prompt": "  "}).status_code == 422
     assert client.post("/api/generate", data={"prompt": "x", "provider": "nope"}).status_code == 422
@@ -84,6 +91,19 @@ def test_generate_requires_input(client):
 def test_generate_rejects_bad_image(client):
     r = client.post("/api/generate", files={"image": ("a.png", b"not an image", "image/png")})
     assert r.status_code == 422
+
+
+def test_generate_rejects_corrupt_png(client):
+    """A PNG whose chunks are misaligned makes PIL raise SyntaxError, not OSError: still 422."""
+    import base64
+
+    broken = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII="
+    )
+    with pytest.raises(SyntaxError):
+        Image.open(io.BytesIO(broken)).load()
+    r = client.post("/api/generate", files={"image": ("a.png", broken, "image/png")})
+    assert r.status_code == 422, r.text
 
 
 def test_generate_from_uploaded_image(client):
