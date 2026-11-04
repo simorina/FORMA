@@ -134,7 +134,7 @@ export function mountLeftPanel(root: HTMLElement, app: App): { focusPrompt(): vo
       h('h2', { class: 'label' }, 'Esempi'),
       examples),
     h('section', { class: 'block' },
-      h('h2', { class: 'label' }, 'Oppure parti da una foto'),
+      h('h2', { class: 'label' }, 'Oppure parti da una foto o da una mesh'),
       drop, photo, photoLimits, file),
     h('section', { class: 'block' },
       h('h2', { class: 'label' }, 'Modello 3D'),

@@ -35,7 +35,7 @@ from .base import (
 HUNYUAN_LICENSE = "Tencent Hunyuan 3D 2.1 Community License (esclusi UE/UK/KR)"
 LOCAL_MODELS = {
     "pixal3d": ModelInfo(
-        "pixal3d", "Pixal3D", "TencentARC/Pixal3D in locale (≥24 GB VRAM, --low_vram ~16 GB).",
+        "pixal3d", "Pixal3D", "TencentARC/Pixal3D in locale (≥24 GB VRAM).",
         "MIT",
     ),
     "trellis2": ModelInfo(
