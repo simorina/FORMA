@@ -116,6 +116,27 @@ def test_generate_from_uploaded_image(client):
     assert job["stages"][0]["message"] == "Immagine caricata"
 
 
+def test_preview_image_then_approve(client):
+    r = client.post("/api/image", data={"prompt": "un vaso", "seed": 3})
+    assert r.status_code == 200, r.text
+    draft = r.json()
+    png = client.get(draft["url"])
+    assert png.status_code == 200 and png.headers["content-type"] == "image/png"
+    job = wait_job(client, client.post("/api/generate", data={
+        "prompt": "un vaso", "draft": draft["draft_id"]}).json()["job_id"])
+    assert job["status"] == "done", job
+    assert job["stages"][0]["message"] == "Immagine approvata"
+    model = job["result"]
+    assert model["kind"] == "text" and model["prompt"] == "un vaso" and model["has_image"]
+
+
+def test_preview_image_errors(client):
+    assert client.post("/api/image", data={"prompt": "  "}).status_code == 422
+    assert client.post("/api/image", data={"prompt": "x", "provider": "nope"}).status_code == 422
+    assert client.post("/api/generate", data={"prompt": "x", "draft": "abcdefabcdef"}).status_code == 404
+    assert client.get("/api/drafts/..%2fsecret.png").status_code == 404
+
+
 def test_reprocess_and_edit(client):
     job = wait_job(client, client.post("/api/generate", data={"prompt": "sfera"}).json()["job_id"])
     mid = job["result"]["id"]
@@ -325,6 +346,13 @@ def test_hf_remote_error_is_friendly(client, settings, tmp_path):
     assert job["status"] == "error"
     assert "Quota GPU" in job["error"]
     assert any(s["status"] == "error" for s in job["stages"])
+
+
+def test_hf_remote_preview_uses_flux_only(client, remote):
+    r = client.post("/api/image", data={"prompt": "un gufo", "provider": "hf_remote", "seed": 5})
+    assert r.status_code == 200, r.text
+    assert [c[1] for c in remote] == ["/infer"]  # no 3D Space touched: no GPU quota spent
+    assert remote[0][2]["seed"] == 5
 
 
 def test_pixal3d_stage_names_are_italian():

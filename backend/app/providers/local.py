@@ -203,6 +203,25 @@ class LocalProvider(Provider):
             glb.export(path)
             return load_mesh_file(str(path))
 
+    def _flux_image(self, prompt: str, seed: int, progress: ProgressFn):
+        import torch
+
+        progress("image", 0.1, "Carico FLUX.1-schnell")
+        flux = self._load_flux()
+        progress("image", 0.4, "FLUX.1 crea l'immagine")
+        gen = torch.Generator("cpu").manual_seed(int(seed))
+        return flux(
+            build_image_prompt(prompt), guidance_scale=0.0, num_inference_steps=4,
+            width=1024, height=1024, generator=gen,
+        ).images[0]
+
+    def image(self, prompt: str, seed: int = 0, progress: ProgressFn = lambda *a: None):
+        ok, reason = self.available()
+        if not ok:
+            raise ProviderError(reason)
+        with self._lock:
+            return self._flux_image(prompt, seed, progress)
+
     def generate(self, prompt, image, params: GenParams, progress: ProgressFn = lambda *a: None):
         ok, reason = self.available()
         if not ok:
@@ -214,14 +233,7 @@ class LocalProvider(Provider):
             if image is None:
                 if not prompt:
                     raise ProviderError("Scrivi un prompt o carica un'immagine.")
-                progress("image", 0.1, "Carico FLUX.1-schnell")
-                flux = self._load_flux()
-                progress("image", 0.4, "FLUX.1 crea l'immagine")
-                gen = torch.Generator("cpu").manual_seed(int(params.seed))
-                image = flux(
-                    build_image_prompt(prompt), guidance_scale=0.0, num_inference_steps=4,
-                    width=1024, height=1024, generator=gen,
-                ).images[0]
+                image = self._flux_image(prompt, params.seed, progress)
             progress("image", 1.0, "Immagine pronta")
             progress("shape", 0.05, "Carico il modello 3D")
             pipe = self._load_shape(key)

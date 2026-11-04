@@ -24,7 +24,7 @@ from .pipeline.process import to_z_up
 from .providers import GenParams, ProviderError, all_providers, get_provider
 from .providers.base import as_single_mesh
 from .service import JobManager, finalize, public_model
-from .storage import ModelStore
+from .storage import DraftStore, ModelStore
 
 log = logging.getLogger("forma")
 MAX_UPLOAD = 40 * 1024 * 1024
@@ -62,6 +62,7 @@ async def _read_upload(upload: UploadFile) -> bytes:
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     store = ModelStore(settings.data_dir)
+    drafts = DraftStore(settings.data_dir)
     jobs = JobManager(store, settings.max_workers)
 
     app = FastAPI(title="Forma API", version=__version__)
@@ -92,6 +93,43 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "defaults": PrintSettings().to_dict(),
         }
 
+    def _provider(name: str):
+        try:
+            prov = get_provider(name or settings.gen_provider)
+        except ProviderError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        ok, reason = prov.available()
+        if not ok:
+            raise HTTPException(409, reason)
+        return prov
+
+    @app.post("/api/image")
+    async def preview_image(
+        prompt: str = Form(""), provider: str = Form(""), seed: int = Form(0)
+    ) -> dict[str, Any]:
+        """Text -> image only: a draft the user approves before spending GPU on the 3D step."""
+        prompt = prompt.strip()[:600]
+        if not prompt:
+            raise HTTPException(422, "Scrivi un prompt per l'immagine")
+        prov = _provider(provider)
+        try:
+            img = await run_in_threadpool(prov.image, prompt, seed)
+        except ProviderError as exc:
+            raise HTTPException(502, str(exc)) from exc
+        draft_id = drafts.save(img)
+        return {"draft_id": draft_id, "url": f"/api/drafts/{draft_id}.png", "prompt": prompt,
+                "seed": seed, "provider": prov.name}
+
+    @app.get("/api/drafts/{draft_id}.png")
+    def draft_png(draft_id: str) -> FileResponse:
+        try:
+            path = drafts.path(draft_id)
+        except KeyError as exc:
+            raise HTTPException(404, "Bozza non trovata") from exc
+        if not path.is_file():
+            raise HTTPException(404, "Bozza non trovata")
+        return FileResponse(path, media_type="image/png")
+
     @app.post("/api/generate")
     async def generate(
         prompt: str = Form(""),
@@ -100,11 +138,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         seed: int = Form(0),
         quality: str = Form("standard"),
         settings_json: str = Form("", alias="settings"),
+        draft: str = Form(""),
         image: UploadFile | None = File(None),
     ) -> dict[str, Any]:
         prompt = prompt.strip()[:600]
         pil: Image.Image | None = None
-        if image is not None and image.filename:
+        source = "upload"
+        if draft:
+            try:
+                pil = drafts.load(draft)
+            except (KeyError, OSError) as exc:
+                raise HTTPException(404, "Bozza non trovata: rigenera l'immagine") from exc
+            source = "draft"
+        elif image is not None and image.filename:
             raw = await _read_upload(image)
             try:
                 pil = Image.open(io.BytesIO(raw))
@@ -118,19 +164,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 pil.thumbnail((2048, 2048))
         if not prompt and pil is None:
             raise HTTPException(422, "Scrivi un prompt o carica un'immagine")
-        name = provider or settings.gen_provider
-        try:
-            prov = get_provider(name)
-        except ProviderError as exc:
-            raise HTTPException(422, str(exc)) from exc
-        ok, reason = prov.available()
-        if not ok:
-            raise HTTPException(409, reason)
+        prov = _provider(provider)
         if quality not in ("draft", "standard", "high"):
             quality = "standard"
         print_settings = _print_settings(settings_json)
         params = GenParams(model=model or None, seed=seed, quality=quality)
-        job = jobs.submit(prompt or None, pil, prov.name, params, print_settings)
+        job = jobs.submit(prompt or None, pil, prov.name, params, print_settings, source=source)
         return {"job_id": job.id, "job": job.to_dict()}
 
     @app.get("/api/jobs/{job_id}")

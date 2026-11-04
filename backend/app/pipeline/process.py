@@ -26,11 +26,14 @@ from .report import printability_report
 
 StepFn = Callable[[str, float], None]
 
+ORIENTATIONS = ("upright", "supports", "flat", "keep")
+
 
 @dataclass
 class PrintSettings:
     target_size_mm: float = 100.0  # size of the largest dimension (base plate included)
     # "upright": as generated, levelled if it stands on a slightly tilted base;
+    # "supports": the stable resting face that leaves the least overhang;
     # "flat": largest flat face on the bed; "keep": untouched.
     orientation: str = "upright"
     hollow: bool = False
@@ -76,7 +79,7 @@ class PrintSettings:
         s.base_margin_mm = float(np.clip(s.base_margin_mm, 0.0, 50.0))
         s.target_faces = int(np.clip(s.target_faces, 2_000, 2_000_000))
         s.repair_resolution = int(np.clip(s.repair_resolution, 64, 384))
-        if s.orientation not in ("upright", "flat", "keep"):
+        if s.orientation not in ORIENTATIONS:
             s.orientation = "upright"
         return s
 
@@ -146,6 +149,55 @@ def orient_flat(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
     if not len(areas):
         return mesh
     return _rest_on(mesh, normals[int(np.argmax(areas))])
+
+
+def overhang_for(mesh: trimesh.Trimesh, down: np.ndarray, limit_deg: float = 45.0) -> float:
+    """Overhang fraction if ``down`` pointed at the bed, without rotating the mesh.
+
+    After a rotation taking ``down`` to -Z a face normal n has z = -(n . down), so it
+    overhangs when n . down > sin(90° - limit). Faces within 0.4 mm of the bed rest on it.
+    """
+    d = np.asarray(down, dtype=float) / np.linalg.norm(down)
+    areas = mesh.area_faces
+    total = float(areas.sum())
+    if total <= 0:
+        return 0.0
+    heights = -(mesh.triangles_center @ d)
+    bed = float((-(mesh.vertices @ d)).min())
+    mask = (mesh.face_normals @ d > math.sin(math.radians(90.0 - limit_deg))) & (heights > bed + 0.4)
+    return float(areas[mask].sum() / total)
+
+
+def orient_min_supports(
+    mesh: trimesh.Trimesh, candidates: int = 32, min_area_frac: float = 0.02
+) -> tuple[trimesh.Trimesh, float, float]:
+    """Rest the model on the stable face that leaves the least overhang.
+
+    Candidates are the largest planar regions of the convex hull (the faces a print can
+    stand on) plus the current orientation. Ties go to the larger resting face.
+    Returns (mesh, overhang before, overhang after) as fractions of the surface.
+    """
+    normals, areas, hull_area = _hull_regions(mesh)
+    current = np.array([0.0, 0.0, -1.0])
+    before = overhang_for(mesh, current)
+    if not len(areas) or hull_area <= 0:
+        return mesh, before, before
+    order = np.argsort(-areas)[:candidates]
+    best_dir: np.ndarray | None = None
+    best_over, best_area = before, 0.0
+    for i in order:
+        if areas[i] < min_area_frac * hull_area:
+            continue
+        over = overhang_for(mesh, normals[i])
+        if over > before - 0.005:
+            continue  # no real gain: never turn a model for nothing
+        a = areas[i] / hull_area
+        # within a percent of overhang, the bigger (steadier) footprint wins
+        if best_dir is None or (round(over, 2), -a) < (round(best_over, 2), -best_area):
+            best_dir, best_over, best_area = normals[i], over, a
+    if best_dir is None:
+        return mesh, before, before
+    return _rest_on(mesh, best_dir), before, best_over
 
 
 def level_upright(
@@ -300,6 +352,10 @@ def process_mesh(
         work, tilt = level_upright(work)
         if tilt:
             steps.append(f"base livellata ({tilt:.0f}°)")
+    elif s.orientation == "supports":
+        work, before, after = orient_min_supports(work)
+        if after < before:
+            steps.append(f"girato per ridurre i supporti (sbalzi {before * 100:.0f}% → {after * 100:.0f}%)")
     work = scale_to(place_on_bed(work), s.target_size_mm)
 
     if s.hollow:

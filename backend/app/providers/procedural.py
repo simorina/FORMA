@@ -288,6 +288,12 @@ class ProceduralProvider(Provider):
             )
         ]
 
+    def image(self, prompt: str, seed: int = 0, progress: ProgressFn = lambda *a: None) -> Image.Image:
+        """Offline 'preview': a render of the parametric shape the prompt selects."""
+        _, fn = pick_shape(prompt)
+        mesh = _to_trimesh(fn(np.random.default_rng(_seed_for(prompt, seed))))
+        return render_preview(mesh, up="z")
+
     def generate(self, prompt, image, params: GenParams, progress: ProgressFn = lambda *a: None):
         text = prompt or ""
         if not text and image is not None:

@@ -89,6 +89,11 @@ class HFRemoteProvider(Provider):
         except Exception as exc:
             raise friendly_error(exc, s.hf_space_flux) from exc
 
+    def image(self, prompt: str, seed: int = 0, progress: ProgressFn = lambda *a: None) -> Image.Image:
+        if not prompt.strip():
+            raise ProviderError("Scrivi un prompt per l'immagine.")
+        return self._image_from_prompt(prompt, seed, progress)
+
     def _shape(self, key: str, img_path: Path, params: GenParams, progress: ProgressFn):
         endpoint = SHAPE_ENDPOINTS[key]
         space = endpoint.space_id(self.settings)

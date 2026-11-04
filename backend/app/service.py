@@ -79,6 +79,7 @@ class Job:
     image_url: str | None = None
     result: dict[str, Any] | None = None
     stages: list[dict[str, Any]] = field(default_factory=list)
+    source: str = "upload"  # where an input image came from: "upload" or "draft"
 
     def __post_init__(self) -> None:
         if not self.stages:
@@ -148,8 +149,11 @@ class JobManager:
         provider_name: str,
         params: GenParams,
         settings: PrintSettings,
+        source: str = "upload",
     ) -> Job:
+        """``source``: "upload" (the user's photo) or "draft" (a preview image they approved)."""
         job = Job(id=uuid.uuid4().hex[:12], prompt=prompt, provider=provider_name, model=params.model)
+        job.source = source
         with self._lock:
             self.jobs[job.id] = job
             # keep memory bounded: forget the oldest *finished* jobs only
@@ -170,7 +174,7 @@ class JobManager:
             if uploaded:
                 self.store.save_image(model_id, image)
                 job.image_url = f"/api/models/{model_id}/image.png"
-                job.set_stage("image", 1.0, "Immagine caricata")
+                job.set_stage("image", 1.0, "Immagine approvata" if job.source == "draft" else "Immagine caricata")
 
             def progress(stage: str, frac: float, message: str) -> None:
                 if uploaded and stage == "image":
@@ -199,7 +203,8 @@ class JobManager:
                     "prompt": job.prompt or "",
                     "provider": provider.name,
                     "model": result.model or params.model,
-                    "kind": "image" if uploaded else "text",
+                    # an approved preview still comes from a prompt: it is a text model
+                    "kind": "image" if uploaded and job.source != "draft" else "text",
                     "has_image": (self.store.path(model_id) / "image.png").is_file(),
                     "seed": params.seed,
                     "quality": params.quality,

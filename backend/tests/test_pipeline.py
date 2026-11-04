@@ -238,6 +238,36 @@ def test_upright_levels_a_tilted_base():
     assert any("livellata" in step for step in res.report["repairs"])
 
 
+def mushroom():
+    stem = trimesh.creation.cylinder(radius=2, height=10)
+    stem.apply_translation([0, 0, 5])
+    cap = trimesh.creation.cylinder(radius=10, height=2)
+    cap.apply_translation([0, 0, 11])
+    return trimesh.util.concatenate([stem, cap])
+
+
+def test_min_supports_turns_a_mushroom_onto_its_cap():
+    from app.pipeline.process import orient_min_supports
+
+    turned, before, after = orient_min_supports(mushroom())
+    assert before > 0.1 and after < 0.02
+    # the cap now rests on the bed: the lowest point is the cap's flat top, wide as the cap
+    low = turned.vertices[turned.vertices[:, 2] < turned.bounds[0, 2] + 1e-6]
+    assert np.ptp(low[:, 0]) == pytest.approx(20, rel=0.05)
+    res = process_mesh(mushroom(), PrintSettings(target_size_mm=40, orientation="supports"))
+    assert res.report["overhang_pct"] < 2
+    assert any("supporti" in step for step in res.report["repairs"])
+
+
+def test_min_supports_never_turns_a_model_for_nothing():
+    from app.pipeline.process import orient_min_supports
+
+    box = trimesh.creation.box((30, 20, 50))  # no overhang standing up
+    turned, before, after = orient_min_supports(box)
+    assert before == after == 0
+    assert np.allclose(turned.extents, [30, 20, 50])
+
+
 def test_upright_leaves_round_and_steep_shapes_alone():
     _, tilt = level_upright(trimesh.creation.icosphere(subdivisions=3))
     assert tilt == 0

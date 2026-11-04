@@ -101,3 +101,35 @@ class ModelStore:
     def delete(self, model_id: str) -> None:
         with self._lock:
             shutil.rmtree(self.path(model_id), ignore_errors=True)
+
+
+class DraftStore:
+    """Preview images waiting for approval, under DATA_DIR/drafts/<id>.png (the newest kept)."""
+
+    def __init__(self, root: Path, keep: int = 40) -> None:
+        self.root = Path(root) / "drafts"
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.keep = keep
+        self._lock = threading.Lock()
+
+    def path(self, draft_id: str) -> Path:
+        if not ID_RE.match(draft_id or ""):
+            raise KeyError(draft_id)
+        return self.root / f"{draft_id}.png"
+
+    def save(self, image: Image.Image) -> str:
+        draft_id = uuid.uuid4().hex[:12]
+        image.convert("RGB").save(self.path(draft_id), optimize=True)
+        with self._lock:
+            files = sorted(self.root.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
+            for old in files[self.keep:]:
+                old.unlink(missing_ok=True)
+        return draft_id
+
+    def load(self, draft_id: str) -> Image.Image:
+        path = self.path(draft_id)
+        if not path.is_file():
+            raise KeyError(draft_id)
+        img = Image.open(path)
+        img.load()
+        return img

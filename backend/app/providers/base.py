@@ -106,6 +106,11 @@ class Provider(ABC):
         progress: ProgressFn = _noop,
     ) -> GenerationResult: ...
 
+    def image(self, prompt: str, seed: int = 0, progress: ProgressFn = _noop) -> Image.Image:
+        """Only the text->image step, so the user can approve the picture before the
+        (slower, quota-hungry) image->3D step."""
+        raise ProviderError(f"{self.label} non genera immagini di anteprima.")
+
     def info(self) -> dict[str, Any]:
         ok, reason = self.available()
         return {
