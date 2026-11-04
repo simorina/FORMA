@@ -26,6 +26,8 @@ const paths: Record<string, string> = {
   spinner: '<path d="M8 2.25a5.75 5.75 0 1 0 5.75 5.75"/>',
   printer: '<path d="M3 13.25h10M4.5 13.25V4.5h7v8.75M4.5 6.5h7"/><path d="M8 6.5v2.5"/>',
   sparkle: '<path d="M8 2.5v3M8 10.5v3M2.5 8h3M10.5 8h3"/>',
+  overhang: '<path d="M2.75 13.25h10.5"/><path d="M6.25 13.25V8.25"/><path d="M2.5 8.25h11L11.25 5h-6.5z"/>',
+  section: '<path d="M8 2l5.25 3v6L8 14 2.75 11V5z"/><path d="M2.75 8.25L8 11.25l5.25-3"/>',
 };
 
 export function icon(name: keyof typeof paths | string, size = 16, label?: string): SVGSVGElement {

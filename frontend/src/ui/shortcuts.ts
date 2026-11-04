@@ -16,6 +16,8 @@ export function mountShortcuts(host: HTMLElement, app: App, focusPrompt: () => v
     [[mod, 'Z'], 'Annulla'],
     [[mod, '⇧', 'Z'], 'Ripeti'],
     [['F'], 'Inquadra il modello'],
+    [['O'], 'Mostra gli sbalzi da sostenere'],
+    [['C'], 'Vista in sezione'],
     [['Spazio'], 'Rotazione automatica'],
     [['H'], 'Cronologia'],
     [['?'], 'Questo elenco'],
@@ -103,6 +105,12 @@ export function mountShortcuts(host: HTMLElement, app: App, focusPrompt: () => v
       case 'f': case 'F':
         app.viewer?.fit();
         break;
+      case 'o': case 'O':
+        if (s.current) app.toggleOverhang();
+        break;
+      case 'c': case 'C':
+        if (s.current) app.setSection(s.section === null ? 0.5 : null);
+        break;
       case ' ':
         if ((e.target as HTMLElement)?.closest?.('button, a, [role="button"], summary')) return;
         e.preventDefault();
@@ -118,7 +126,9 @@ export function mountShortcuts(host: HTMLElement, app: App, focusPrompt: () => v
         break;
       case 'Escape':
         if (s.sheet) app.store.set({ sheet: null });
+        else if (s.draft) app.cancelDraft();
         else if (s.edit) app.setEdit(false);
+        else if (s.section !== null) app.setSection(null);
         break;
     }
   });

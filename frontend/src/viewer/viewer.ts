@@ -58,6 +58,16 @@ export class Viewer {
   private readonly clip = new THREE.Plane(new THREE.Vector3(0, 0, -1), 1e6);
   private readonly mirrorClip = new THREE.Plane(new THREE.Vector3(0, 0, 1), 1e6);
   private readonly fade = { value: 30 };
+  // Overhang map: faces steeper than 45° below horizontal, not resting on the bed, are painted.
+  // Section view: inner (back) faces seen through the cut are painted flat, so the wall reads
+  // as a solid cut surface instead of a hollow skin.
+  private readonly overhangU = {
+    uOverhang: { value: 0 },
+    uOverColor: { value: new THREE.Color(0xe5566f) },
+    uSection: { value: 0 },
+    uCutColor: { value: new THREE.Color(0x553311) },
+  };
+  private section: number | null = null;
   private mesh: THREE.Mesh | null = null;
   private reflection: THREE.Mesh | null = null;
   private dirty = true;
@@ -122,6 +132,30 @@ export class Viewer {
       shadowSide: THREE.BackSide,
       clippingPlanes: [this.clip],
     });
+    this.material.onBeforeCompile = (shader) => {
+      Object.assign(shader.uniforms, this.overhangU);
+      shader.vertexShader = 'varying float vWorldZ;\n' + shader.vertexShader.replace(
+        '#include <project_vertex>',
+        '#include <project_vertex>\n vWorldZ = (modelMatrix * vec4(transformed, 1.0)).z;',
+      );
+      shader.fragmentShader =
+        'uniform float uOverhang;\nuniform vec3 uOverColor;\nuniform float uSection;\nuniform vec3 uCutColor;\nvarying float vWorldZ;\n' +
+        shader.fragmentShader.replace(
+          '#include <normal_fragment_maps>',
+          `#include <normal_fragment_maps>
+          if (uOverhang > 0.5) {
+            vec3 worldN = inverseTransformDirection(normal, viewMatrix);
+            // n.z < -sin(45°), softened over a few degrees; faces on the bed rest on it
+            float over = (1.0 - smoothstep(-0.74, -0.67, worldN.z)) * step(0.4, vWorldZ);
+            diffuseColor.rgb = mix(diffuseColor.rgb, uOverColor, over * 0.92);
+          }`,
+        ).replace(
+          '#include <tonemapping_fragment>',
+          `if (uSection > 0.5 && !gl_FrontFacing) gl_FragColor = vec4(uCutColor, 1.0);
+          #include <tonemapping_fragment>`,
+        );
+    };
+    this.material.customProgramCacheKey = () => 'forma-model';
     this.reflectionMaterial = this.material.clone();
     this.reflectionMaterial.transparent = true;
     this.reflectionMaterial.opacity = 0.42;
@@ -184,6 +218,38 @@ export class Viewer {
   setFilament(hex: string): void {
     this.material.color.set(hex);
     this.reflectionMaterial.color.set(hex);
+    // the overhang paint must stand out from the filament: blue on warm colours, red otherwise
+    this.overhangU.uOverColor.value.set(this.overhangColor(hex));
+    this.overhangU.uCutColor.value.set(hex).multiplyScalar(0.38);
+    this.dirty = true;
+  }
+
+  /** The colour overhangs are painted in, for the legend. */
+  overhangColor(hex = '#' + this.material.color.getHexString()): string {
+    const hsl = { h: 0, s: 0, l: 0 };
+    new THREE.Color(hex).getHSL(hsl);
+    const warm = hsl.s > 0.25 && (hsl.h < 0.14 || hsl.h > 0.88);
+    return warm ? '#3d8bff' : '#ff4d5e';
+  }
+
+  setOverhang(on: boolean): void {
+    this.overhangU.uOverhang.value = on ? 1 : 0;
+    this.dirty = true;
+  }
+
+  /** Cut the model horizontally at a fraction of its height, to look inside (null: whole). */
+  setSection(frac: number | null): void {
+    this.section = frac;
+    this.overhangU.uSection.value = frac === null ? 0 : 1;
+    this.applyClip();
+  }
+
+  private applyClip(): void {
+    if (this.reveal) return; // the reveal drives the plane while it runs
+    const h = this.size()?.[2] ?? 0;
+    const c = this.section !== null && this.mesh ? Math.max(0.2, this.section * h) : 1e6;
+    this.clip.constant = c;
+    this.mirrorClip.constant = c;
     this.dirty = true;
   }
 
@@ -347,6 +413,7 @@ export class Viewer {
     g.dispose();
     this.mesh = this.reflection = null;
     this.reveal = null;
+    this.section = null;
     this.clip.constant = this.mirrorClip.constant = 1e6;
   }
 
@@ -423,8 +490,8 @@ export class Viewer {
       this.clip.constant = h; // keeps z <= h: the model rises from the bed layer by layer
       this.mirrorClip.constant = h;
       if (t >= 1) {
-        this.clip.constant = this.mirrorClip.constant = 1e6;
         this.reveal = null;
+        this.applyClip();
       }
       this.dirty = true;
     }

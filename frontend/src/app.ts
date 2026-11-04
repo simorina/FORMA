@@ -2,8 +2,12 @@
  * Application state and actions. UI modules render from the store and call these actions;
  * the viewer is driven from here.
  */
-import { ApiError, api, type Job, type Model, type PrintSettings, type ProvidersResponse, type Quality } from './lib/api';
+import {
+  ApiError, MESH_EXTENSIONS, api,
+  type Draft, type Job, type Model, type PrintSettings, type ProvidersResponse, type Quality,
+} from './lib/api';
 import { DEFAULT_FILAMENT, filamentByKey, uiColor } from './lib/filaments';
+import { estimate, materialByKey, type Estimate } from './lib/materials';
 import { PRINTERS, fitOnBed, type Printer } from './lib/printers';
 import { createStore, saved, type Store } from './lib/store';
 import { title } from './lib/format';
@@ -22,6 +26,7 @@ interface GenerateRequest {
   quality: Quality;
   settings: Partial<PrintSettings>;
   image: File | null;
+  draft?: string | null;
 }
 
 export interface AppState {
@@ -37,13 +42,22 @@ export interface AppState {
   printer: string;
   custom: { w: number; d: number; h: number };
   filament: string;
+  material: string;
+  infill: number; // 0..1
+  spoolG: number;
+  prices: Record<string, number>; // €/kg the user set, per material
+  reviewImage: boolean; // approve the picture before the 3D step
+  draft: Draft | null;
+  drafting: boolean;
+  overhang: boolean; // paint overhangs in the viewport
+  section: number | null; // cut height as a fraction of the model, or null
   job: Job | null;
   lastRequest: GenerateRequest | null;
   current: Model | null;
   shape: [number, number, number] | null; // live size in the viewer (changes while sculpting)
   history: Model[];
   historyLoaded: boolean;
-  busy: null | 'apply' | 'repair' | 'load';
+  busy: null | 'apply' | 'repair' | 'load' | 'upload';
   edit: boolean;
   sculpt: SculptState;
   autoRotate: boolean;
@@ -77,6 +91,15 @@ function initial(): AppState {
     printer: saved.get('printer', PRINTERS[0].key),
     custom: saved.get('custom', { w: 200, d: 200, h: 200 }),
     filament: saved.get('filament', DEFAULT_FILAMENT),
+    material: saved.get('material', 'pla'),
+    infill: saved.get('infill', 0.15),
+    spoolG: saved.get('spool', 1000),
+    prices: saved.get<Record<string, number>>('prices', {}),
+    reviewImage: saved.get('reviewImage', true),
+    draft: null,
+    drafting: false,
+    overhang: false,
+    section: null,
     job: null,
     lastRequest: null,
     current: null,
@@ -132,8 +155,33 @@ export class App {
     return !!s.job && (s.job.status === 'queued' || s.job.status === 'running');
   }
 
+  /** Something is cooking: a job, a preview image or a mesh being repaired. */
+  working(s = this.state): boolean {
+    return this.generating(s) || s.drafting || s.busy === 'upload';
+  }
+
+  price(s = this.state): number {
+    return s.prices[s.material] ?? materialByKey(s.material).price;
+  }
+
+  /** Grams, metres, cost, time and copies for the current model with the user's choices. */
+  estimate(s = this.state): Estimate | null {
+    const r = s.current?.report;
+    if (!r) return null;
+    const p = this.printer(s);
+    return estimate(
+      { volume_cm3: r.volume_cm3, surface_cm2: r.surface_cm2, bbox_mm: this.size(s) ?? r.bbox_mm },
+      {
+        density: materialByKey(s.material).density, infill: s.infill, spoolG: s.spoolG,
+        pricePerKg: this.price(s), flow: p.flow, layerS: p.layerS, bed: { w: p.w, d: p.d },
+      },
+    );
+  }
+
   modelTitle(s = this.state): string {
     // while a new model is being made, the bar names that one (the old one is only dimmed)
+    if (s.draft) return title(s.draft.prompt, 'text');
+    if (s.drafting && s.prompt.trim()) return title(s.prompt, 'text');
     if (this.generating(s) && s.job) return title(s.job.prompt, s.job.prompt ? 'text' : 'image');
     if (s.current) return title(s.current.prompt, s.current.kind);
     return 'Nuovo modello';
@@ -181,18 +229,11 @@ export class App {
 
   // -- generation ------------------------------------------------------------------------
   canGenerate(s = this.state): boolean {
-    return !this.generating(s) && !s.offline && (s.prompt.trim().length > 0 || !!s.image);
+    return !this.working(s) && !s.offline && (s.prompt.trim().length > 0 || !!s.image);
   }
 
-  async generate(): Promise<void> {
-    const s = this.state;
-    if (this.generating()) return;
-    if (!s.prompt.trim() && !s.image) {
-      toast('Scrivi cosa vuoi stampare o carica una foto.');
-      return;
-    }
-    if (s.edit) this.setEdit(false);
-    const req: GenerateRequest = {
+  private request(s: AppState, extra: Partial<GenerateRequest> = {}): GenerateRequest {
+    return {
       prompt: s.prompt.trim(),
       provider: s.provider,
       model: s.modelKey,
@@ -200,8 +241,78 @@ export class App {
       quality: s.quality,
       settings: this.pick(s.settings),
       image: s.image,
+      ...extra,
     };
-    await this.submit(req);
+  }
+
+  async generate(): Promise<void> {
+    const s = this.state;
+    if (this.working()) return;
+    if (!s.prompt.trim() && !s.image) {
+      toast('Scrivi cosa vuoi stampare o carica una foto.');
+      return;
+    }
+    if (s.edit) this.setEdit(false);
+    // From text, show the picture first: the 3D step is the slow one that spends GPU quota.
+    if (s.reviewImage && !s.image) {
+      await this.preview();
+      return;
+    }
+    await this.submit(this.request(s));
+  }
+
+  /** Make (or remake, with a new seed) the preview image for the prompt. */
+  async preview(): Promise<void> {
+    const s = this.state;
+    const prompt = s.prompt.trim() || s.draft?.prompt || '';
+    if (!prompt) return;
+    this.store.set({ drafting: true, sheet: null });
+    try {
+      const draft = await api.image({ prompt, provider: s.provider, seed: Math.floor(Math.random() * 2 ** 31) });
+      this.store.set({ draft });
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), { tone: 'negative' });
+    } finally {
+      this.store.set({ drafting: false });
+    }
+  }
+
+  /** The user likes the picture: make the 3D model from it. */
+  async approveDraft(): Promise<void> {
+    const d = this.state.draft;
+    if (!d || this.working()) return;
+    this.store.set({ draft: null });
+    await this.submit(this.request(this.state, { prompt: d.prompt, image: null, draft: d.draft_id }));
+  }
+
+  cancelDraft(): void {
+    this.store.set({ draft: null });
+  }
+
+  /** Bring any mesh (STL, OBJ, 3MF, GLB, PLY): repaired and prepared as a new model. */
+  async uploadMesh(file: File): Promise<void> {
+    const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+    if (!MESH_EXTENSIONS.includes(ext)) {
+      toast(`Formato non supportato: .${ext}`, { tone: 'negative' });
+      return;
+    }
+    if (this.working()) return;
+    if (this.state.edit) this.setEdit(false, { silent: true });
+    this.store.set({ busy: 'upload', sheet: null, draft: null });
+    try {
+      const model = await api.process({
+        file, prompt: file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim(),
+        settings: this.pick(this.state.settings),
+      });
+      this.store.set({ history: [model, ...this.state.history], busy: null });
+      await this.select(model, { reveal: true });
+      const fixes = model.report.repairs.length;
+      toast(fixes ? `Mesh riparata (${fixes} interventi) e pronta per la stampa.` : 'Mesh già valida: preparata per la stampa.', { tone: 'positive' });
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), { tone: 'negative' });
+    } finally {
+      if (this.state.busy === 'upload') this.store.set({ busy: null });
+    }
   }
 
   retry(): void {
@@ -210,7 +321,8 @@ export class App {
   }
 
   private async submit(req: GenerateRequest): Promise<void> {
-    this.store.set({ lastRequest: req, sheet: null });
+    this.store.set({ lastRequest: req, sheet: null, section: null });
+    this.viewer?.setSection(null);
     try {
       const { job } = await api.generate(req);
       this.store.set({ job });
@@ -261,6 +373,7 @@ export class App {
   // -- models ----------------------------------------------------------------------------
   async select(model: Model, opts: { reveal?: boolean; keepView?: boolean } = {}): Promise<void> {
     if (this.state.edit) this.setEdit(false, { silent: true });
+    if (this.state.section !== null) this.setSection(null);
     this.store.set({ current: model, shape: null, settings: { ...this.state.settings, ...model.settings }, busy: 'load' });
     try {
       const shape = (await this.viewer?.load(model.urls.mesh, opts)) ?? null;
@@ -371,6 +484,44 @@ export class App {
     root.setProperty('--filament', f.hex);
     root.setProperty('--data', uiColor(f.hex));
     this.viewer?.setFilament(f.hex);
+  }
+
+  setMaterial(key: string): void {
+    this.store.set({ material: key });
+    saved.set('material', key);
+  }
+
+  setInfill(v: number): void {
+    this.store.set({ infill: v });
+    saved.set('infill', v);
+  }
+
+  setSpool(g: number): void {
+    this.store.set({ spoolG: g });
+    saved.set('spool', g);
+  }
+
+  setPrice(perKg: number): void {
+    const prices = { ...this.state.prices, [this.state.material]: perKg };
+    this.store.set({ prices });
+    saved.set('prices', prices);
+  }
+
+  setReview(on: boolean): void {
+    this.store.set({ reviewImage: on });
+    saved.set('reviewImage', on);
+  }
+
+  toggleOverhang(): void {
+    const on = !this.state.overhang;
+    this.store.set({ overhang: on });
+    this.viewer?.setOverhang(on);
+  }
+
+  /** Cut the model at a fraction of its height (null: no cut). */
+  setSection(frac: number | null): void {
+    this.store.set({ section: frac });
+    this.viewer?.setSection(frac);
   }
 
   setProvider(name: string): void {

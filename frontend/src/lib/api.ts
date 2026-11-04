@@ -1,6 +1,6 @@
 /** Typed client for the Forma FastAPI backend (/api). */
 
-export type Orientation = 'upright' | 'flat' | 'keep';
+export type Orientation = 'upright' | 'supports' | 'flat' | 'keep';
 export type Quality = 'draft' | 'standard' | 'high';
 
 export interface PrintSettings {
@@ -111,6 +111,17 @@ export interface Job {
   result: Model | null;
 }
 
+export interface Draft {
+  draft_id: string;
+  url: string;
+  prompt: string;
+  seed: number;
+  provider: string;
+}
+
+/** Mesh files the print pipeline can repair and prepare. */
+export const MESH_EXTENSIONS = ['stl', 'obj', '3mf', 'glb', 'ply', 'off'];
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -152,6 +163,7 @@ export const api = {
     quality: Quality;
     settings: Partial<PrintSettings>;
     image: File | null;
+    draft?: string | null;
   }) {
     const form = new FormData();
     form.set('prompt', input.prompt);
@@ -160,19 +172,33 @@ export const api = {
     form.set('seed', String(input.seed));
     form.set('quality', input.quality);
     form.set('settings', JSON.stringify(input.settings));
-    if (input.image) form.set('image', input.image, input.image.name);
+    if (input.draft) form.set('draft', input.draft);
+    else if (input.image) form.set('image', input.image, input.image.name);
     return request<{ job_id: string; job: Job }>('/api/generate', { method: 'POST', body: form });
+  },
+
+  /** Text -> image only: a preview to approve before the 3D step. */
+  image(input: { prompt: string; provider: string; seed: number }) {
+    const form = new FormData();
+    form.set('prompt', input.prompt);
+    form.set('provider', input.provider);
+    form.set('seed', String(input.seed));
+    return request<Draft>('/api/image', { method: 'POST', body: form });
   },
 
   job: (id: string) => request<Job>(`/api/jobs/${id}`),
 
-  /** Re-run the print pipeline on a stored model, or on an edited mesh (new model). */
-  process(input: { modelId: string; settings: Partial<PrintSettings>; prompt?: string; stl?: ArrayBuffer }) {
+  /**
+   * Re-run the print pipeline: on a stored model (modelId), on an edited mesh (stl, a new
+   * model with modelId as parent) or on any mesh file the user brings (file, a new model).
+   */
+  process(input: { modelId?: string; settings: Partial<PrintSettings>; prompt?: string; stl?: ArrayBuffer; file?: File }) {
     const form = new FormData();
-    form.set('model_id', input.modelId);
+    if (input.modelId) form.set('model_id', input.modelId);
     form.set('settings', JSON.stringify(input.settings));
     if (input.prompt) form.set('prompt', input.prompt);
     if (input.stl) form.set('file', new Blob([input.stl], { type: 'model/stl' }), 'modifica.stl');
+    else if (input.file) form.set('file', input.file, input.file.name);
     return request<Model>('/api/process', { method: 'POST', body: form });
   },
 

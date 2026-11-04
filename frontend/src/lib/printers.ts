@@ -6,13 +6,19 @@ export interface Printer {
   w: number;
   d: number;
   h: number;
+  /**
+   * Average volumetric flow of a standard 0.2 mm profile (mm³/s) and seconds lost per layer.
+   * Rough figures for the time estimate, deliberately conservative; the slicer has the real one.
+   */
+  flow: number;
+  layerS: number;
 }
 
 export const PRINTERS: readonly Printer[] = [
-  { key: 'bambu-a1', label: 'Bambu Lab A1', w: 256, d: 256, h: 256 },
-  { key: 'prusa-mk4', label: 'Prusa MK4', w: 250, d: 210, h: 220 },
-  { key: 'ender-3', label: 'Creality Ender 3', w: 220, d: 220, h: 250 },
-  { key: 'custom', label: 'Personalizzata', w: 200, d: 200, h: 200 },
+  { key: 'bambu-a1', label: 'Bambu Lab A1', w: 256, d: 256, h: 256, flow: 9, layerS: 2.5 },
+  { key: 'prusa-mk4', label: 'Prusa MK4', w: 250, d: 210, h: 220, flow: 8, layerS: 2.5 },
+  { key: 'ender-3', label: 'Creality Ender 3', w: 220, d: 220, h: 250, flow: 4, layerS: 3 },
+  { key: 'custom', label: 'Personalizzata', w: 200, d: 200, h: 200, flow: 6, layerS: 3 },
 ];
 
 export type Size = readonly [number, number, number];

@@ -10,6 +10,9 @@ interface Status {
 }
 
 export function status(app: App, s: AppState): Status | null {
+  if (s.busy === 'upload') return { text: 'Riparo la mesh', tone: 'neutral', busy: true };
+  if (s.drafting) return { text: 'Creo l’immagine', tone: 'neutral', busy: true };
+  if (s.draft) return { text: 'Immagine da approvare', tone: 'warning' };
   if (s.job && app.generating(s)) {
     return { text: s.job.status === 'queued' ? 'In coda' : 'In preparazione', tone: 'neutral', busy: true };
   }

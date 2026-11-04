@@ -6,24 +6,26 @@
 import type { App, AppState } from '../app';
 import { exportName, type ExportFormat, type Orientation } from '../lib/api';
 import { h, render, svg } from '../lib/dom';
-import { FILAMENTS, filamentByKey, metres } from '../lib/filaments';
+import { FILAMENTS, filamentByKey } from '../lib/filaments';
 import { dims, grams, mm, num } from '../lib/format';
 import { icon } from '../lib/icons';
+import { INFILLS, MATERIALS, SPOOLS, duration, euro, materialByKey } from '../lib/materials';
 import { PRINTERS, fitOnBed, scaled } from '../lib/printers';
 import { mountEditTools } from './edit';
 
 const ORIENTATIONS: { key: Orientation; label: string; title: string }[] = [
   { key: 'upright', label: 'In piedi', title: 'Come generato, con la base livellata' },
+  { key: 'supports', label: 'Meno supporti', title: 'Sulla faccia che lascia meno sbalzi' },
   { key: 'flat', label: 'Disteso', title: 'Sulla faccia piana più ampia' },
   { key: 'keep', label: 'Com’è', title: 'Senza ruotare' },
 ];
+const spoolLabel = (g: number) => (g >= 1000 ? `${num(g / 1000, g % 1000 ? 1 : 0)} kg` : `${g} g`);
 const FORMATS: { key: ExportFormat; label: string; note: string }[] = [
   { key: '3mf', label: '3MF', note: 'millimetri, per Bambu Studio, PrusaSlicer, Cura' },
   { key: 'stl', label: 'STL', note: 'binario, millimetri: lo legge ogni slicer' },
   { key: 'obj', label: 'OBJ', note: 'millimetri, Z in alto, per la modellazione' },
   { key: 'glb', label: 'GLB', note: 'metri, Y in alto (glTF), per il web e la AR' },
 ];
-const SPOOL_G = 1000;
 
 export function mountRightPanel(root: HTMLElement, app: App): void {
   const sheetClose = h('button', { class: 'icon-btn sheet-close', type: 'button', 'aria-label': 'Chiudi', onclick: () => app.store.set({ sheet: null }) }, icon('close'));
@@ -52,6 +54,24 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
       'data-key': f.key, style: { '--c': f.hex },
       onclick: () => app.setFilament(f.key),
     })));
+  const materialSeg = h('div', { class: 'segmented', role: 'radiogroup', 'aria-label': 'Materiale' });
+  const materialNote = h('p', { class: 'meta material-note' });
+  const infill = h('select', { class: 'select select-small', id: 'infill', 'aria-label': 'Riempimento' },
+    INFILLS.map((v) => h('option', { value: String(v) }, v === 1 ? 'Pieno' : `${Math.round(v * 100)}%`))) as HTMLSelectElement;
+  infill.addEventListener('change', () => app.setInfill(Number(infill.value)));
+  const spoolSel = h('select', { class: 'select select-small', id: 'spool', 'aria-label': 'Bobina' },
+    SPOOLS.map((g) => h('option', { value: String(g) }, spoolLabel(g)))) as HTMLSelectElement;
+  spoolSel.addEventListener('change', () => app.setSpool(Number(spoolSel.value)));
+  const priceInput = h('input', { type: 'number', class: 'num-input num', min: 1, max: 500, step: 0.5, inputmode: 'decimal', id: 'price', 'aria-label': 'Prezzo del filamento in euro al chilo' }) as HTMLInputElement;
+  priceInput.addEventListener('change', () => {
+    const v = Math.max(1, Math.min(500, Number(priceInput.value.replace(',', '.')) || materialByKey(app.state.material).price));
+    app.setPrice(Math.round(v * 100) / 100);
+  });
+  const materialGrid = h('div', { class: 'material-grid' },
+    h('label', { class: 'mini-field' }, h('span', { class: 'label' }, 'Riempimento'), infill),
+    h('label', { class: 'mini-field' }, h('span', { class: 'label' }, 'Bobina'), spoolSel),
+    h('label', { class: 'mini-field' }, h('span', { class: 'label' }, '€ al kg'), priceInput));
+
   swatches.addEventListener('keydown', (e) => {
     const keys = FILAMENTS.map((f) => f.key);
     const i = keys.indexOf(app.state.filament);
@@ -121,7 +141,9 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
       h('label', { class: 'label', for: 'printer' }, 'Stampante'),
       printer, custom,
       h('div', { class: 'label label-row' }, h('span', null, 'Filamento'), filamentName),
-      swatches),
+      swatches,
+      h('div', { class: 'label label-row' }, h('span', null, 'Materiale')),
+      materialSeg, materialNote, materialGrid),
     h('section', { class: 'block' },
       h('h2', { class: 'section-title' }, 'Dimensioni e preparazione'),
       h('div', { class: 'size-row' }, h('label', { class: 'label', for: 'size' }, 'Lato più lungo'), h('span', { class: 'with-unit' }, sizeInput, h('span', { class: 'meta' }, 'mm'))),
@@ -148,7 +170,18 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
       if (document.activeElement !== el) el.value = String(v);
     }
     const f = filamentByKey(s.filament);
-    filamentName.textContent = `PLA ${f.label}`;
+    const mat = materialByKey(s.material);
+    filamentName.textContent = `${mat.label} ${f.label}`;
+    if (!prev || prev.material !== s.material) {
+      render(materialSeg, MATERIALS.map((m) => h('button', {
+        class: 'seg', type: 'button', role: 'radio', 'aria-checked': String(m.key === s.material),
+        title: m.note, onclick: () => app.setMaterial(m.key),
+      }, m.label)));
+      materialNote.textContent = `${mat.note} Densità ${num(mat.density, 2)} g/cm³.`;
+    }
+    if (infill.value !== String(s.infill)) infill.value = String(s.infill);
+    if (spoolSel.value !== String(s.spoolG)) spoolSel.value = String(s.spoolG);
+    if (document.activeElement !== priceInput) priceInput.value = String(app.price(s));
     swatches.querySelectorAll<HTMLElement>('.swatch').forEach((el) => {
       const on = el.dataset.key === s.filament;
       el.setAttribute('aria-checked', String(on));
@@ -180,6 +213,7 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
       fitAction.onclick = () => app.setSetting('target_size_mm', Math.floor(fit.maxSize));
     }
 
+    orientSeg.classList.add('segmented-grid');
     render(orientSeg, ORIENTATIONS.map((o) => h('button', {
       class: 'seg', type: 'button', role: 'radio', title: o.title, 'aria-checked': String(s.settings.orientation === o.key),
       onclick: () => app.setSetting('orientation', o.key),
@@ -195,7 +229,9 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
     applyBtn.replaceChildren(s.busy === 'apply' ? icon('spinner', 14) : '', s.busy === 'apply' ? 'Preparo…' : 'Applica');
     applyNote.textContent = !c ? 'Valgono per il prossimo modello.' : dirty ? 'Modifiche da applicare al modello.' : 'Applicate al modello sul piatto.';
 
-    if (!prev || prev.current !== c || prev.filament !== s.filament || prev.shape !== s.shape || prev.printer !== s.printer || prev.custom !== s.custom) {
+    if (!prev || prev.current !== c || prev.filament !== s.filament || prev.shape !== s.shape || prev.printer !== s.printer ||
+      prev.custom !== s.custom || prev.material !== s.material || prev.infill !== s.infill || prev.spoolG !== s.spoolG ||
+      prev.prices !== s.prices) {
       renderReport(s);
     }
     prev = s;
@@ -212,22 +248,24 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
       return;
     }
     const r = c.report;
-    const g = r.pla_grams_typical;
-    const frac = Math.min(1, g / SPOOL_G);
-    const prints = g > 0 ? Math.floor(SPOOL_G / g) : 0;
+    const est = app.estimate(s)!;
+    const g = est.grams;
+    const mat = materialByKey(s.material);
+    const frac = Math.min(1, g / s.spoolG);
     render(spool,
       spoolSVG(frac),
       h('div', { class: 'spool-text' },
         h('p', { class: 'spool-figure num' }, h('span', { class: 'spool-grams' }, grams(g)), h('span', { class: 'spool-unit' }, ' g')),
-        h('p', null, `di una bobina da 1 kg${prints > 1 ? `: ne stampi ${num(prints)}` : ''}`),
-        h('p', { class: 'meta num' }, `≈ ${num(metres(g), 1)} m di filamento · pieno ${grams(r.pla_grams)} g`)));
+        h('p', null, `di una bobina da ${spoolLabel(s.spoolG)} di ${mat.label}${est.prints > 1 ? `: ne stampi ${num(est.prints)}` : est.prints === 0 ? ': non basta' : ''}`),
+        h('p', { class: 'meta num' }, `≈ ${num(est.metres, 1)} m · ≈ ${euro(est.cost)} · ≈ ${duration(est.minutes)}`)));
     const size = app.size(s) ?? r.bbox_mm;
     const rows: [string, Node | string][] = [
       ['Misure', `${dims(size)} mm`],
-      ['Volume', `${num(r.volume_cm3, 1)} cm³`],
+      ['Volume', `${num(r.volume_cm3, 1)} cm³ · pieno ${grams(est.solidGrams)} g`],
       ['Mesh', r.watertight ? 'Chiusa e valida' : 'Aperta'],
       ['Pezzi', num(r.components)],
       ['Sbalzi oltre 45°', `${num(r.overhang_pct, 0)}%`],
+      ['Copie per piatto', est.copies > 0 ? num(est.copies) : '—'],
       ['Triangoli', num(r.triangles)],
     ];
     render(kv, rows.map(([k, v]) => h('div', { class: 'kv-row' }, h('dt', null, k), h('dd', { class: 'num' }, v))));
@@ -238,7 +276,8 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
         h('ul', null, r.repairs.map((x) => h('li', null, x))))
       : h('p', { class: 'meta' }, `Nessuna riparazione necessaria · ${num(r.process_ms / 1000, 1)} s`);
     const fb = c.gen_meta?.fallback_from;
-    render(notes, warn, fb ? h('p', { class: 'note' }, `Generato con ${c.model}: ${fb} non era disponibile.`) : null, repairs);
+    const time = h('p', { class: 'meta' }, `Tempo e costo sono stime (profilo standard da 0,2 mm, ${Math.round(s.infill * 100)}% di riempimento): lo slicer ti darà quelli esatti.`);
+    render(notes, warn, fb ? h('p', { class: 'note' }, `Generato con ${c.model}: ${fb} non era disponibile.`) : null, repairs, time);
     render(formats, FORMATS.map((f) => h('a', {
       class: f.key === '3mf' ? 'btn btn-secondary is-recommended' : 'btn btn-secondary',
       href: c.urls.export[f.key], download: '', title: f.note,

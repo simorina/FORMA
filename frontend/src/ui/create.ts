@@ -1,6 +1,6 @@
 /** Left panel: the prompt, examples, a photo, the 3D model to use; and the history tab. */
 import type { App, AppState } from '../app';
-import type { ModelInfo, ProviderInfo, Quality } from '../lib/api';
+import { MESH_EXTENSIONS, type ModelInfo, type ProviderInfo, type Quality } from '../lib/api';
 import { h, render } from '../lib/dom';
 import { ago, dims, grams, title } from '../lib/format';
 import { icon } from '../lib/icons';
@@ -45,6 +45,12 @@ export function mountLeftPanel(root: HTMLElement, app: App): { focusPrompt(): vo
   });
   const generate = h('button', { class: 'btn btn-primary', type: 'button', onclick: () => app.generate() }, 'Genera');
   const hint = h('span', { id: 'prompt-hint', class: 'meta' }, 'Invio per generare');
+  const review = h('input', { type: 'checkbox', class: 'switch', role: 'switch', 'aria-label': 'Mostrami prima l’immagine' }) as HTMLInputElement;
+  review.addEventListener('change', () => app.setReview(review.checked));
+  const reviewRow = h('label', { class: 'switch-row review-row' },
+    h('span', { class: 'switch-text' }, h('span', null, 'Mostrami prima l’immagine'),
+      h('span', { class: 'meta' }, 'La approvi, poi parte il 3D: risparmi quota GPU')),
+    review);
 
   // -- examples --------------------------------------------------------------------------
   const examples = h(
@@ -62,16 +68,22 @@ export function mountLeftPanel(root: HTMLElement, app: App): { focusPrompt(): vo
     ),
   );
 
-  // -- photo -----------------------------------------------------------------------------
-  const file = h('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp', class: 'visually-hidden', tabindex: '-1', 'aria-hidden': 'true' }) as HTMLInputElement;
+  // -- photo or mesh ----------------------------------------------------------------------
+  const accept = ['image/png', 'image/jpeg', 'image/webp', ...MESH_EXTENSIONS.map((e) => `.${e}`)].join(',');
+  const file = h('input', { type: 'file', accept, class: 'visually-hidden', tabindex: '-1', 'aria-hidden': 'true' }) as HTMLInputElement;
   const take = (f: File | undefined | null) => {
     if (!f) return;
-    if (!/^image\/(png|jpeg|webp)$/.test(f.type)) {
-      toast('Usa una foto PNG, JPG o WEBP.', { tone: 'negative' });
+    if (f.size > MAX_UPLOAD) {
+      toast('Il file supera 40 MB.', { tone: 'negative' });
       return;
     }
-    if (f.size > MAX_UPLOAD) {
-      toast('La foto supera 40 MB.', { tone: 'negative' });
+    const ext = f.name.split('.').pop()?.toLowerCase() ?? '';
+    if (MESH_EXTENSIONS.includes(ext)) {
+      void app.uploadMesh(f); // a mesh: repaired and prepared right away
+      return;
+    }
+    if (!/^image\/(png|jpeg|webp)$/.test(f.type)) {
+      toast('Usa una foto PNG, JPG o WEBP, o una mesh STL, OBJ, 3MF, GLB o PLY.', { tone: 'negative' });
       return;
     }
     app.setImage(f);
@@ -79,9 +91,9 @@ export function mountLeftPanel(root: HTMLElement, app: App): { focusPrompt(): vo
   file.addEventListener('change', () => take(file.files?.[0]));
   const drop = h(
     'div',
-    { class: 'drop', role: 'button', tabindex: 0, 'aria-describedby': 'photo-limits', 'aria-label': 'Scegli una foto' },
+    { class: 'drop', role: 'button', tabindex: 0, 'aria-describedby': 'photo-limits', 'aria-label': 'Scegli una foto o una mesh' },
     icon('image'),
-    h('span', null, 'Trascina una foto o ', h('span', { class: 'link' }, 'scegli un file')),
+    h('span', null, 'Trascina una foto o una mesh, o ', h('span', { class: 'link' }, 'scegli un file')),
   );
   drop.addEventListener('click', () => file.click());
   drop.addEventListener('keydown', (e) => {
@@ -101,7 +113,8 @@ export function mountLeftPanel(root: HTMLElement, app: App): { focusPrompt(): vo
     take(e.dataTransfer?.files?.[0]);
   });
   const photo = h('div', { class: 'photo' });
-  const photoLimits = h('p', { id: 'photo-limits', class: 'meta' }, 'PNG, JPG o WEBP fino a 40 MB. Un oggetto solo, su sfondo semplice.');
+  const photoLimits = h('p', { id: 'photo-limits', class: 'meta' },
+    'Foto PNG, JPG o WEBP: un oggetto solo, su sfondo semplice. Mesh STL, OBJ, 3MF, GLB o PLY: la riparo e la preparo per la stampa. Fino a 40 MB.');
 
   // -- model -----------------------------------------------------------------------------
   const providerSeg = h('div', { class: 'segmented', role: 'radiogroup', 'aria-label': 'Dove generare' });
@@ -115,7 +128,8 @@ export function mountLeftPanel(root: HTMLElement, app: App): { focusPrompt(): vo
     h('section', { class: 'block block-prompt' },
       h('label', { class: 'label', for: 'prompt' }, 'Cosa vuoi stampare?'),
       prompt,
-      h('div', { class: 'prompt-foot' }, hint, generate)),
+      h('div', { class: 'prompt-foot' }, hint, generate),
+      reviewRow),
     h('section', { class: 'block block-examples' },
       h('h2', { class: 'label' }, 'Esempi'),
       examples),
@@ -204,8 +218,10 @@ export function mountLeftPanel(root: HTMLElement, app: App): { focusPrompt(): vo
     root.classList.toggle('is-first-run', empty);
     generate.className = `btn ${s.current ? 'btn-secondary' : 'btn-primary'}`;
     // stays enabled with an empty prompt: pressing it explains what is missing
-    generate.disabled = app.generating(s) || !!s.offline;
-    generate.textContent = app.generating(s) ? 'In corso…' : s.current ? 'Genera di nuovo' : 'Genera';
+    generate.disabled = app.working(s) || !!s.offline;
+    generate.textContent = app.working(s) ? 'In corso…' : s.current ? 'Genera di nuovo' : 'Genera';
+    review.checked = s.reviewImage;
+    reviewRow.hidden = !!s.image; // a photo is already the image
     prompt.placeholder = s.image ? 'Facoltativo: descrivi la foto' : 'Un vaso a spirale con il collo stretto';
 
     if (!prev || prev.imageUrl !== s.imageUrl) {
