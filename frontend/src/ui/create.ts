@@ -104,15 +104,16 @@ export function mountLeftPanel(root: HTMLElement, app: App): { focusPrompt(): vo
     'div',
     { class: 'view', id: 'view-create', role: 'tabpanel', 'aria-labelledby': 'tab-create' },
     h('section', { class: 'block block-prompt' },
-      h('label', { class: 'label', for: 'prompt' }, 'Cosa vuoi stampare?'),
+      h('p', { class: 'kicker', 'aria-hidden': 'true' }, 'Su misura'),
+      h('label', { class: 'prompt-label', for: 'prompt' }, 'Cosa vuoi ', h('em', null, 'stampare?')),
       prompt,
       h('div', { class: 'prompt-foot' }, hint, generate),
       reviewRow),
     h('section', { class: 'block block-examples' },
-      h('h2', { class: 'label' }, 'Esempi'),
+      h('h2', { class: 'label' }, 'Ispirazioni'),
       examples),
     h('section', { class: 'block' },
-      h('h2', { class: 'label' }, 'Oppure parti da una foto o da una mesh'),
+      h('h2', { class: 'label' }, 'Da una foto o da una mesh'),
       drop, photo, photoLimits, file),
     h('section', { class: 'block' },
       h('h2', { class: 'label' }, 'Modello 3D'),
@@ -156,7 +157,7 @@ export function mountLeftPanel(root: HTMLElement, app: App): { focusPrompt(): vo
       selected ? m.notes.map((n) => h('span', { class: m.eu_restricted ? 'model-note is-warning' : 'model-note' }, n)) : null,
     );
 
-  const historyRow = (m: AppState['history'][number], s: AppState) => {
+  const historyRow = (m: AppState['history'][number], s: AppState, no: number) => {
     const name = title(m.title || m.prompt, m.kind);
     let armed = false;
     const del = h('button', { class: 'icon-btn history-delete', type: 'button', 'aria-label': `Elimina ${name}`, title: 'Elimina' }, icon('trash'));
@@ -178,6 +179,7 @@ export function mountLeftPanel(root: HTMLElement, app: App): { focusPrompt(): vo
       h('button', { class: 'history-open', type: 'button', 'aria-current': s.current?.id === m.id ? 'true' : 'false', onclick: () => { void app.select(m, { reveal: true }); app.store.set({ sheet: null }); } },
         h('img', { class: 'thumb', src: m.urls.thumb, alt: '', width: 48, height: 48, loading: 'lazy' }),
         h('span', { class: 'history-text' },
+          h('span', { class: 'history-no num', 'aria-hidden': 'true' }, `N° ${String(no).padStart(2, '0')}`),
           h('span', { class: 'history-title' }, name),
           h('span', { class: 'history-meta num' }, `${dims(m.report.bbox_mm)} mm · ${grams(m.report.pla_grams_typical)} g · ${ago(m.created_at)}`))),
       del);
@@ -229,7 +231,7 @@ export function mountLeftPanel(root: HTMLElement, app: App): { focusPrompt(): vo
     if (!prev || prev.history !== s.history || prev.current !== s.current || prev.historyLoaded !== s.historyLoaded) {
       historyCount.textContent = s.history.length === 1 ? '1 modello' : `${s.history.length} modelli`;
       render(historyList, s.history.length
-        ? s.history.map((m) => historyRow(m, s))
+        ? s.history.map((m, i) => historyRow(m, s, s.history.length - i))
         : h('li', { class: 'empty' }, s.historyLoaded
           ? 'Ancora nessun modello. Ogni modello che generi resta qui, con le sue impostazioni di stampa.'
           : 'Carico la cronologia…'));

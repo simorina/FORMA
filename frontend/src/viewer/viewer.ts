@@ -25,7 +25,6 @@ THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
 THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
-const BACKGROUND = 0x111111;
 const easeOut = (t: number) => 1 - (1 - t) ** 3;
 const easeInOut = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
 
@@ -110,7 +109,8 @@ export class Viewer {
     private readonly host: HTMLElement,
     private readonly events: ViewerEvents = {},
   ) {
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    // Transparent: the studio backdrop (an ivory sweep) is painted by CSS behind the canvas.
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.05;
@@ -119,7 +119,7 @@ export class Viewer {
     // r186: PCF samples a Vogel disk scaled by shadow.radius (PCFSoftShadowMap was removed)
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.localClippingEnabled = true;
-    this.renderer.setClearColor(BACKGROUND, 1);
+    this.renderer.setClearColor(0x000000, 0);
     this.renderer.domElement.className = 'viewport-canvas';
     this.renderer.domElement.setAttribute('aria-label', 'Vista 3D del modello sul piatto di stampa');
     this.renderer.domElement.setAttribute('role', 'img');
@@ -129,14 +129,14 @@ export class Viewer {
     this.labels.domElement.className = 'viewport-labels';
     host.appendChild(this.labels.domElement);
 
-    this.scene.background = new THREE.Color(BACKGROUND);
     const pmrem = new THREE.PMREMGenerator(this.renderer);
     this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-    this.scene.environmentIntensity = 0.55;
+    this.scene.environmentIntensity = 0.6;
     pmrem.dispose();
 
-    // Studio lights: a soft key from the front left casting the shadow, a cool rim from behind.
-    this.key = new THREE.DirectionalLight(0xffffff, 2.4);
+    // Studio lights: a soft key from the front left casting the shadow, a cool rim from behind,
+    // and warm light bounced off the ivory floor.
+    this.key = new THREE.DirectionalLight(0xfffaf2, 2.3);
     this.key.castShadow = true;
     this.key.shadow.mapSize.set(2048, 2048);
     this.key.shadow.bias = -0.0004;
@@ -144,7 +144,7 @@ export class Viewer {
     this.key.shadow.radius = 7;
     const rim = new THREE.DirectionalLight(0xdfe8ff, 0.9);
     rim.position.set(160, 260, 220);
-    const fill = new THREE.HemisphereLight(0xffffff, 0x0a0a0a, 0.35);
+    const fill = new THREE.HemisphereLight(0xfffaf3, 0x8a7a64, 0.45);
     fill.position.set(0, 0, 1);
     this.scene.add(this.key, this.key.target, rim, fill);
 
@@ -265,6 +265,7 @@ export class Viewer {
     const light = new THREE.Color(hex).getHSL({ h: 0, s: 0, l: 0 }).l > 0.42;
     this.wireMaterial.color.set(light ? 0x000000 : 0xffffff);
     this.wireMaterial.opacity = light ? 0.34 : 0.22;
+    this.sculpt.setCursorColor(light ? 0x17130f : 0xffffff);
     this.dirty = true;
   }
 
@@ -387,8 +388,9 @@ export class Viewer {
       radius = Math.max(box.getSize(new THREE.Vector3()).length() / 2, 10);
       radius = Math.max(radius * 1.12, 25);
     } else {
-      center = new THREE.Vector3(0, 0, 0);
+      // the empty bed sits low in the frame, under the first-run headline
       radius = this.bed.radius * 1.04;
+      center = new THREE.Vector3(0, 0, radius * 0.22);
     }
     const vfov = THREE.MathUtils.degToRad(this.camera.fov);
     const hfov = 2 * Math.atan(Math.tan(vfov / 2) * this.camera.aspect);

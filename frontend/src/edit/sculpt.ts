@@ -310,6 +310,17 @@ export class Sculpt {
     return true;
   }
 
+  /** Ink on light filaments, white on dark ones: the brush ring must read on the surface. */
+  setCursorColor(hex: number): void {
+    for (const g of [this.cursor, this.mirrorCursor]) {
+      g.traverse((o) => {
+        const m = (o as THREE.Mesh).material as THREE.MeshBasicMaterial | undefined;
+        m?.color?.setHex(hex);
+      });
+    }
+    this.ctx.requestRender();
+  }
+
   // -- picking and cursor ----------------------------------------------------------------
   private rayFrom(e: PointerEvent): THREE.Raycaster {
     const r = this.ctx.dom.getBoundingClientRect();

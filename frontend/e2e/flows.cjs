@@ -63,7 +63,7 @@ const step = async (name, fn) => {
     await page.fill('#prompt', 'Vaso a collo stretto con la pancia morbida');
     await page.keyboard.press('Enter');
     await page.waitForSelector('.draft:not([hidden]) .draft-image:not([hidden])', { timeout: 15000 });
-    assert.match(await text('.topbar .pill'), /Immagine da approvare/);
+    assert.match(await text('.topbar .pill'), /Immagine da approvare/i);
     const first = await page.getAttribute('.draft-image', 'src');
     await page.click('.draft-actions .btn-secondary'); // another image
     await page.waitForFunction((src) => { const i = document.querySelector('.draft-image'); return i && !i.hidden && i.getAttribute('src') !== src; }, first, { timeout: 15000 });
@@ -99,19 +99,19 @@ const step = async (name, fn) => {
     await page.waitForSelector('.progress:not([hidden])', { timeout: 5000 });
     await waitDone();
     assert.match(await text('.object-name'), /Pedone/);
-    assert.match(await text('.topbar .pill'), /Pronto da stampare|Servono supporti/);
+    assert.match(await text('.topbar .pill'), /Pronto da stampare|Servono supporti/i);
     assert.match(await text('.kv'), /Chiusa e valida/);
     assert.ok(await page.isVisible('.btn-download'));
   });
 
   await step('filament swatch recolours the data hue', async () => {
+    const css = (name) => page.evaluate((n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim(), name);
     await page.click('.swatch[data-key="azzurro"]');
-    const v = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--data').trim());
-    assert.equal(v, '#47b2ef');
+    assert.equal(await css('--filament'), '#47b2ef');
+    assert.notEqual(await css('--data'), '#47b2ef'); // darkened for contrast on the ivory paper
     assert.match(await text('.label-row'), /PLA Azzurro/);
-    await page.click('.swatch[data-key="nero"]');
-    const dark = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--data').trim());
-    assert.notEqual(dark, '#232325'); // lifted for contrast on the dark panel
+    await page.click('.swatch[data-key="blu"]');
+    assert.equal(await css('--data'), '#2c63d8'); // already reads on the paper: kept as it is
   });
 
   await step('printer change re-judges the fit; oversize suggests the max', async () => {
@@ -155,7 +155,7 @@ const step = async (name, fn) => {
     for (let i = 1; i <= 8; i++) await page.mouse.move(cx + i * 3, cy - i * 3);
     await page.mouse.up();
     assert.match(await text('.undo-row .meta'), /1 modifica/);
-    assert.match(await text('.topbar .pill'), /Modifiche da riparare/);
+    assert.match(await text('.topbar .pill'), /Modifiche da riparare/i);
     assert.equal(await page.getAttribute('.btn-download', 'aria-disabled'), 'true');
     await page.keyboard.press('Control+z');
     assert.match(await text('.undo-row .meta'), /Nessuna modifica/);
@@ -404,7 +404,7 @@ const step = async (name, fn) => {
     await page.keyboard.press('Enter');
     await page.waitForSelector('.progress-actions:not([hidden])', { timeout: 8000 });
     assert.match(await text('.progress-message'), /Quota GPU/);
-    assert.match(await text('.topbar .pill'), /Non riuscito/);
+    assert.match(await text('.topbar .pill'), /Non riuscito/i);
     await page.unroute('**/api/jobs/**');
     await arm();
     await page.click('.progress-actions .btn-primary'); // Riprova, now against the real backend

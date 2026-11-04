@@ -56,8 +56,8 @@ def render_preview(
 
     order = np.argsort(-depth[faces].mean(axis=1))
     img = Image.new("RGB", (size, size))
-    # Soft vertical gradient background.
-    top, bottom = np.array([44, 46, 54]), np.array([18, 19, 24])
+    # Soft vertical gradient background: the ivory studio sweep of the interface.
+    top, bottom = np.array([250, 247, 241]), np.array([228, 219, 205])
     grad = (top[None, :] * (1 - np.linspace(0, 1, size))[:, None] + bottom[None, :] * np.linspace(
         0, 1, size
     )[:, None]).astype(np.uint8)
@@ -70,7 +70,7 @@ def render_preview(
     w = (xy[:, 0].max() - xy[:, 0].min()) * 0.55
     sd.ellipse([size / 2 - w, base_y - 12, size / 2 + w, base_y + 12], fill=110)
     shadow = shadow.filter(ImageFilter.GaussianBlur(14))
-    img.paste((8, 8, 10), (0, 0), shadow)
+    img.paste((120, 104, 84), (0, 0), shadow)
 
     draw = ImageDraw.Draw(img)
     base = np.array(color, dtype=float)

@@ -9,12 +9,13 @@ import { CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import type { Printer } from '../lib/printers';
 import { num } from '../lib/format';
 
-const PLATE = 0x191919;
-const MINOR = 0x262626;
-const MAJOR = 0x363636;
-const EDGE = 0x3a3a3a;
-const VOLUME = 0x2c2c2c;
-const VOLUME_OVER = 0xe5566f;
+// A pale stone plate on the ivory sweep, its grid drawn in warm greys like a pattern sheet.
+const PLATE = 0xe9e1d3;
+const MINOR = 0xd5cab7;
+const MAJOR = 0xbfb19a;
+const EDGE = 0x9f8f76;
+const VOLUME = 0xb9ab95;
+const VOLUME_OVER = 0x9b2335;
 
 function roundedRect(w: number, d: number, r: number): THREE.Shape {
   const x = -w / 2, y = -d / 2;
@@ -75,8 +76,9 @@ export class Bed {
     const plate = new THREE.Mesh(
       new THREE.ShapeGeometry(shape, 12),
       new THREE.MeshStandardMaterial({
-        // a little see-through: the mirrored model below reads as a soft reflection
-        color: PLATE, roughness: 0.55, metalness: 0.1, transparent: true, opacity: 0.8,
+        // a little see-through: the mirrored model below reads as a soft reflection, as on
+        // the glossy acrylic of a product shot
+        color: PLATE, roughness: 0.5, metalness: 0, transparent: true, opacity: 0.84,
       }),
     );
     plate.receiveShadow = true;

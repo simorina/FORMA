@@ -11,7 +11,7 @@ export class Dimensions {
   constructor() {
     this.lines = new THREE.LineSegments(
       new THREE.BufferGeometry(),
-      new THREE.LineBasicMaterial({ color: 0x8c8c8c, transparent: true, opacity: 0.75, depthTest: false }),
+      new THREE.LineBasicMaterial({ color: 0x4a4238, transparent: true, opacity: 0.7, depthTest: false }),
     );
     this.lines.renderOrder = 5;
     this.group.add(this.lines);

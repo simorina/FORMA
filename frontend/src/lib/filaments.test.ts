@@ -1,16 +1,27 @@
 import { describe, expect, it } from 'vitest';
-import { FILAMENTS, contrast, inkOn, metres, uiColor } from './filaments';
+import { FILAMENTS, PAPER, contrast, inkOn, metres, uiColor } from './filaments';
 import { fitOnBed, scaled } from './printers';
 import { ago, dims, grams, mm } from './format';
 
 describe('filament data hue', () => {
-  it.each(FILAMENTS.map((f) => [f.label, f.hex]))('%s reads at 4.5:1 on the panel', (_, hex) => {
-    expect(contrast(uiColor(hex), '#111111')).toBeGreaterThanOrEqual(4.5);
+  it.each(FILAMENTS.map((f) => [f.label, f.hex]))('%s reads at 4.5:1 on the paper', (_, hex) => {
+    expect(contrast(uiColor(hex), PAPER)).toBeGreaterThanOrEqual(4.5);
   });
 
-  it('keeps colours that already contrast and lifts black', () => {
-    expect(uiColor('#ff7a1a')).toBe('#ff7a1a');
-    expect(uiColor('#232325')).not.toBe('#232325');
+  it('keeps colours that already contrast and darkens light ones towards the ink', () => {
+    expect(uiColor('#2c63d8')).toBe('#2c63d8');
+    expect(uiColor('#232325')).toBe('#232325');
+    const yellow = uiColor('#ffc928');
+    expect(yellow).not.toBe('#ffc928');
+    expect(contrast(yellow, PAPER)).toBeLessThan(4.8); // just enough, not black
+  });
+
+  it('lifts dark colours towards white on a dark ground', () => {
+    expect(uiColor('#ff7a1a', '#111111')).toBe('#ff7a1a');
+    expect(contrast(uiColor('#232325', '#111111'), '#111111')).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('puts the readable ink on a swatch', () => {
     expect(inkOn('#f2f1ec')).toBe('#000000');
     expect(inkOn('#2c63d8')).toBe('#ffffff');
   });

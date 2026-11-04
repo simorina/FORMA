@@ -70,7 +70,7 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
   const materialGrid = h('div', { class: 'material-grid' },
     h('label', { class: 'mini-field' }, h('span', { class: 'label' }, 'Riempimento'), infill),
     h('label', { class: 'mini-field' }, h('span', { class: 'label' }, 'Bobina'), spoolSel),
-    h('label', { class: 'mini-field' }, h('span', { class: 'label' }, '€ al kg'), priceInput));
+    h('label', { class: 'mini-field' }, h('span', { class: 'label' }, '€ al ', h('span', { class: 'unit' }, 'kg')), priceInput));
 
   swatches.addEventListener('keydown', (e) => {
     const keys = FILAMENTS.map((f) => f.key);
@@ -171,6 +171,7 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
   // -- rendering -------------------------------------------------------------------------
   let prev: AppState | null = null;
   const update = (s: AppState) => {
+    if (prev && prev.edit !== s.edit) root.scrollTop = 0;
     printView.hidden = s.edit;
     editView.hidden = !s.edit;
     const p = app.printer(s);
@@ -273,7 +274,10 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
       h('div', { class: 'spool-text' },
         h('p', { class: 'spool-figure num' }, h('span', { class: 'spool-grams' }, grams(g)), h('span', { class: 'spool-unit' }, ' g')),
         h('p', null, `di una bobina da ${spoolLabel(s.spoolG)} di ${mat.label}${est.prints > 1 ? `: ne stampi ${num(est.prints)}` : est.prints === 0 ? ': non basta' : ''}`),
-        h('p', { class: 'meta num' }, `≈ ${num(est.metres, 1)} m · ≈ ${euro(est.cost)} · ≈ ${duration(est.minutes)}`)));
+        h('dl', { class: 'spool-est num' },
+          h('div', null, h('dt', null, 'Filamento'), h('dd', null, `≈ ${num(est.metres, 1)} m`)),
+          h('div', null, h('dt', null, 'Costo'), h('dd', null, `≈ ${euro(est.cost)}`)),
+          h('div', null, h('dt', null, 'Tempo'), h('dd', null, `≈ ${duration(est.minutes)}`)))));
     const size = app.size(s) ?? r.bbox_mm;
     const rows: [string, Node | string][] = [
       ['Misure', `${dims(size)} mm`],
@@ -312,16 +316,27 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
   update(app.state);
 }
 
-/** The spool as a ring: the arc this print takes from a 1 kg spool, in the filament colour. */
+/**
+ * The spool drawn like a watch dial: the hairline flange with its hour ticks, the wound
+ * filament as a ring with the arc this print takes, in the filament colour, and the hub.
+ */
 function spoolSVG(frac: number): SVGSVGElement {
-  const r = 34, c = 2 * Math.PI * r;
+  const r = 33, c = 2 * Math.PI * r;
   const used = Math.max(frac > 0 ? 0.012 : 0, frac); // a print of a few grams still shows a mark
-  return svg(`<svg class="spool-ring" width="88" height="88" viewBox="0 0 88 88" aria-hidden="true">
-    <circle cx="44" cy="44" r="${r}" fill="none" stroke="#262626" stroke-width="7"/>
-    <circle cx="44" cy="44" r="${r}" fill="none" stroke="var(--data)" stroke-width="7"
-      stroke-dasharray="${(used * c).toFixed(2)} ${c.toFixed(2)}" transform="rotate(-90 44 44)"/>
-    <circle cx="44" cy="44" r="12" fill="none" stroke="#2e2e2e" stroke-width="2"/>
-    <circle cx="44" cy="44" r="3" fill="#2e2e2e"/>
+  const ticks = Array.from({ length: 12 }, (_, i) => {
+    const a = (i / 12) * 2 * Math.PI, long = i % 3 === 0;
+    const r0 = long ? 37.5 : 38.6, r1 = 41;
+    const [s, k] = [Math.sin(a), -Math.cos(a)];
+    return `<line x1="${(46 + s * r0).toFixed(2)}" y1="${(46 + k * r0).toFixed(2)}" x2="${(46 + s * r1).toFixed(2)}" y2="${(46 + k * r1).toFixed(2)}"/>`;
+  }).join('');
+  return svg(`<svg class="spool-ring" width="92" height="92" viewBox="0 0 92 92" aria-hidden="true">
+    <circle cx="46" cy="46" r="44.5" fill="none" stroke="var(--rule-strong)" stroke-width=".75"/>
+    <g stroke="var(--ink)" stroke-width=".9" stroke-linecap="round">${ticks}</g>
+    <circle cx="46" cy="46" r="${r}" fill="none" stroke="var(--paper-lo)" stroke-width="6"/>
+    <circle cx="46" cy="46" r="${r}" fill="none" stroke="var(--data)" stroke-width="6"
+      stroke-dasharray="${(used * c).toFixed(2)} ${c.toFixed(2)}" transform="rotate(-90 46 46)"/>
+    <circle cx="46" cy="46" r="13" fill="none" stroke="var(--rule-strong)" stroke-width=".75"/>
+    <circle cx="46" cy="46" r="2.6" fill="var(--ink)"/>
   </svg>`);
 }
 
@@ -334,10 +349,10 @@ function planSVG(w: number, d: number, box: [number, number, number] | null, rot
   let foot = '';
   if (box) {
     const fx = (rotated ? box[1] : box[0]) * k, fy = (rotated ? box[0] : box[1]) * k;
-    foot = `<rect x="${(S - fx) / 2}" y="${(S - fy) / 2}" width="${fx}" height="${fy}" rx="2" fill="${fits ? 'var(--data)' : 'var(--negative)'}" opacity="${fits ? 0.9 : 0.85}"/>`;
+    foot = `<rect x="${(S - fx) / 2}" y="${(S - fy) / 2}" width="${fx}" height="${fy}" fill="${fits ? 'var(--data)' : 'var(--negative)'}" opacity="${fits ? 0.9 : 0.85}"/>`;
   }
   return svg(`<svg width="${S}" height="${S}" viewBox="0 0 ${S} ${S}">
-    <rect x="${ox}" y="${oy}" width="${bw}" height="${bd}" rx="4" fill="#1a1a1a" stroke="#333" stroke-width="1"/>
+    <rect x="${ox + 0.5}" y="${oy + 0.5}" width="${bw - 1}" height="${bd - 1}" fill="var(--paper-lo)" stroke="var(--rule-strong)" stroke-width="1"/>
     ${foot}
   </svg>`);
 }

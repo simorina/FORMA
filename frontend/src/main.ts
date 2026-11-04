@@ -1,9 +1,13 @@
-import '@fontsource-variable/inter';
+// Bodoni Moda with both axes (weight and optical size: hairlines get finer as the type grows),
+// upright and italic; Jost for labels and text.
+import '@fontsource-variable/bodoni-moda/standard.css';
+import '@fontsource-variable/bodoni-moda/standard-italic.css';
+import '@fontsource-variable/jost/wght.css';
 import './styles/app.css';
 import { App, type AppState } from './app';
 import { h, typingTarget } from './lib/dom';
 import { filamentByKey } from './lib/filaments';
-import { icon } from './lib/icons';
+import { icon, seal } from './lib/icons';
 import { fitOnBed } from './lib/printers';
 import { mountLeftPanel } from './ui/create';
 import { mountRightPanel } from './ui/print';
@@ -72,7 +76,8 @@ const take = (f: File) => {
 };
 const dropOverlay = h('div', { class: 'drop-overlay' },
   h('div', { class: 'drop-overlay-card' },
-    icon('upload', 20),
+    seal(84),
+    h('p', { class: 'kicker' }, 'Atelier Forma'),
     h('p', { class: 'drop-overlay-title' }, 'Rilascia qui'),
     h('p', { class: 'meta' }, 'Una foto diventa un modello 3D, una mesh viene riparata e preparata')));
 dropOverlay.hidden = true;

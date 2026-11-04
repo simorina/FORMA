@@ -1,6 +1,6 @@
 /**
- * 44px top bar: the product, the object's name (click to rename it) with its status, actions,
- * the primary download.
+ * Top bar, as on a fashion house's site: the object's name (click to rename it) with its status
+ * on the left, the wordmark in the centre, actions and the primary download on the right.
  */
 import type { App, AppState } from '../app';
 import { h } from '../lib/dom';
@@ -94,7 +94,7 @@ export function mountTopbar(root: HTMLElement, app: App): void {
   const rule = h('span', { class: 'vrule hide-phone', 'aria-hidden': 'true' });
 
   root.append(
-    h('div', { class: 'brand' }, mark(20), h('span', { class: 'wordmark' }, 'Forma')),
+    h('div', { class: 'brand' }, mark(26), h('span', { class: 'wordmark' }, 'Forma')),
     h('span', { class: 'vrule', 'aria-hidden': 'true' }),
     h('div', { class: 'object' }, name, pill),
     h('div', { class: 'topbar-actions' }, editBtn, historyBtn, helpBtn, rule, download),

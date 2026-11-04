@@ -56,16 +56,18 @@ export function mountStage(root: HTMLElement, app: App): void {
   // the preview image to approve before the 3D step
   const draftImg = h('img', { class: 'draft-image', alt: 'Immagine di anteprima generata dal prompt', width: 280, height: 280 });
   const draftWait = h('div', { class: 'draft-wait', 'aria-hidden': 'true' }, icon('spinner', 20));
+  // the picture before the 3D step is a fitting before the tailoring: "la prova"
+  const draftKicker = h('p', { class: 'kicker' }, 'La prova');
   const draftTitle = h('h2', { class: 'stage-title' });
   const draftText = h('p', { class: 'draft-text' });
-  const draftMeta = h('p', { class: 'meta' });
+  const draftMeta = h('p', { class: 'draft-quote' });
   const draftEn = h('p', { class: 'meta draft-en' });
   const approve = h('button', { class: 'btn btn-primary', type: 'button', onclick: () => app.approveDraft() }, 'Crea il modello 3D');
   const another = h('button', { class: 'btn btn-secondary', type: 'button', onclick: () => app.preview() }, 'Un’altra immagine');
   const dismiss = h('button', { class: 'btn btn-ghost', type: 'button', onclick: () => app.cancelDraft() }, 'Annulla');
   const draftCard = h('div', { class: 'draft', role: 'dialog', 'aria-label': 'Anteprima dell’immagine' },
     h('div', { class: 'draft-media' }, draftImg, draftWait),
-    h('div', { class: 'draft-body' }, draftTitle, draftText, draftMeta, draftEn, h('div', { class: 'draft-actions' }, approve, another, dismiss)));
+    h('div', { class: 'draft-body' }, draftKicker, draftTitle, draftText, draftMeta, draftEn, h('div', { class: 'draft-actions' }, approve, another, dismiss)));
 
   root.append(empty, progress, draftCard, fatal, hint, dock, corner);
 
@@ -134,7 +136,8 @@ export function mountStage(root: HTMLElement, app: App): void {
     empty.hidden = !showEmpty;
     if (showEmpty && (!prev || prev.providers !== s.providers || prev.provider !== s.provider || prev.historyLoaded !== s.historyLoaded || prev.printer !== s.printer)) {
       render(empty,
-        h('h2', { class: 'stage-title' }, 'Il piatto è vuoto'),
+        h('p', { class: 'kicker' }, 'Atelier di stampa 3D'),
+        h('h2', { class: 'stage-title stage-hero' }, 'Il piatto ', h('em', null, 'è vuoto')),
         h('p', null, 'Descrivi un oggetto, carica una foto o una mesh da riparare. Forma lo modella in 3D, lo ripara e lo prepara in millimetri per la tua stampante.'),
         h('p', { class: 'meta' }, honestNote(s)));
     }

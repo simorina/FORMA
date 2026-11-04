@@ -1,4 +1,4 @@
-/** Outline icons, 16px, 1.5px stroke in currentColor (one set, grey by default). */
+/** Outline icons, 16px, a fine 1.25px stroke in currentColor (one set, grey by default). */
 import { svg } from './dom';
 
 const paths: Record<string, string> = {
@@ -34,7 +34,7 @@ const paths: Record<string, string> = {
 
 export function icon(name: keyof typeof paths | string, size = 16, label?: string): SVGSVGElement {
   const el = svg(
-    `<svg width="${size}" height="${size}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="icon icon-${name}">${paths[name] ?? ''}</svg>`,
+    `<svg width="${size}" height="${size}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" class="icon icon-${name}">${paths[name] ?? ''}</svg>`,
   );
   if (label) {
     el.setAttribute('role', 'img');
@@ -45,15 +45,27 @@ export function icon(name: keyof typeof paths | string, size = 16, label?: strin
   return el;
 }
 
-/**
- * The Forma mark: an F built from print layers, drawn in the filament colour
- * (it changes with the filament you pick).
- */
+/** A Didone capital F: hairline arms and serifs, a heavy stem (20 × 20 units). */
+const F_PATH =
+  '<rect x="6" y="3" width="2.5" height="14"/><rect x="4.1" y="3" width="11.3" height=".8"/>' +
+  '<path d="M15.4 3v4h-.55c-.2-1.75-.7-2.8-1.95-3.2z"/><rect x="8.5" y="9.5" width="4.1" height=".75"/>' +
+  '<rect x="12" y="8.1" width=".65" height="3.55"/><rect x="4.1" y="16.2" width="6.5" height=".8"/>';
+/** The stem cut into print layers: the house's F is built the way a printer builds it. */
+const F_LAYERS = [5.6, 7.75, 9.9, 12.05, 14.2].map((y) => `<rect x="6" y="${y}" width="2.5" height=".42"/>`).join('');
+
+/** The Forma mark: the house's F in ink (small sizes: the plain letter). */
 export function mark(size = 20): SVGSVGElement {
-  return svg(`<svg width="${size}" height="${size}" viewBox="0 0 20 20" class="mark" aria-hidden="true">
-    <rect x="3" y="2.5" width="14" height="3" rx="1.5" fill="var(--data)"/>
-    <rect x="3" y="7" width="5" height="3" rx="1.5" fill="var(--data)" opacity=".72"/>
-    <rect x="3" y="11.5" width="10.5" height="3" rx="1.5" fill="var(--data)"/>
-    <rect x="3" y="16" width="5" height="2.5" rx="1.25" fill="var(--data)" opacity=".72"/>
+  return svg(`<svg width="${size}" height="${size}" viewBox="0 0 20 20" class="mark" fill="currentColor" aria-hidden="true">${F_PATH}</svg>`);
+}
+
+/**
+ * The seal: the F with its stem in print layers, inside a hairline ring, for the large moments
+ * (the drop overlay). The layers are cut out in the paper colour.
+ */
+export function seal(size = 72): SVGSVGElement {
+  return svg(`<svg width="${size}" height="${size}" viewBox="0 0 20 20" class="seal" fill="currentColor" aria-hidden="true">
+    <circle cx="10" cy="10" r="9.4" fill="none" stroke="currentColor" stroke-width=".22"/>
+    <circle cx="10" cy="10" r="8.7" fill="none" stroke="currentColor" stroke-width=".08"/>
+    <g transform="translate(10 10) scale(.6) translate(-9.75 -10)">${F_PATH}<g fill="var(--paper-hi)">${F_LAYERS}</g></g>
   </svg>`);
 }

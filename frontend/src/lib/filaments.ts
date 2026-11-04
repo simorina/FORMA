@@ -1,7 +1,7 @@
 /**
  * PLA colours. The chosen filament is the product's one data hue: it tints the model and the
- * report's key figures. On the dark surface the UI uses a version lifted to 4.5:1 contrast,
- * so black or navy filament still reads; the 3D model keeps the true colour.
+ * report's key figures. On the ivory paper the UI uses a version darkened towards the ink to
+ * 4.5:1 contrast, so white or yellow filament still reads; the 3D model keeps the true colour.
  */
 
 export interface Filament {
@@ -52,18 +52,27 @@ export function contrast(a: string, b: string): number {
   return (l1 + 0.05) / (l2 + 0.05);
 }
 
-/** The colour mixed towards white just enough to reach `min` contrast on `bg`. */
-export function uiColor(hex: string, bg = '#111111', min = 4.5): string {
+/** The paper the interface is printed on (page and panels): data colours must read on it. */
+export const PAPER = '#f4efe6';
+const INK = '#17130f';
+
+/**
+ * The colour moved just enough to reach `min` contrast on `bg`: towards the ink on a light
+ * ground, towards white on a dark one.
+ */
+export function uiColor(hex: string, bg = PAPER, min = 4.5): string {
   if (contrast(hex, bg) >= min) return hex;
   const c = hexToRgb(hex);
+  // 0.179: the luminance at which black and white contrast equally
+  const to = hexToRgb(luminance(bg) > 0.179 ? INK : '#ffffff');
+  const mix = (t: number) => rgbToHex(c.map((v, k) => v + (to[k] - v) * t) as RGB);
   let lo = 0, hi = 1;
   for (let i = 0; i < 20; i++) {
     const t = (lo + hi) / 2;
-    const mixed = rgbToHex(c.map((v) => v + (255 - v) * t) as RGB);
-    if (contrast(mixed, bg) >= min) hi = t;
+    if (contrast(mix(t), bg) >= min) hi = t;
     else lo = t;
   }
-  return rgbToHex(c.map((v) => v + (255 - v) * hi) as RGB);
+  return mix(hi);
 }
 
 /** Ink to put on a swatch of this colour. */
