@@ -83,7 +83,10 @@ const step = async (name, fn) => {
       const { models } = await (await fetch('/api/models')).json();
       for (const m of models) await fetch(`/api/models/${m.id}`, { method: 'DELETE' });
     });
-    await page.reload({ waitUntil: 'networkidle' });
+    // The reload commits only once the old page is torn down, which waits for the 3D view it is
+    // still animating (reveal, auto-rotate): ~15 s in software WebGL (SwiftShader) on an idle
+    // machine, more than the default 30 s when other browsers share the CPU.
+    await page.reload({ waitUntil: 'networkidle', timeout: 90000 });
     await sleep(800);
     assert.equal(await page.isChecked('.review-row .switch'), false);
   });

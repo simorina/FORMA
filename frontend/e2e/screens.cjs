@@ -26,14 +26,16 @@ async function wipe(page) {
 }
 
 async function run(browser, device) {
-  const ctx = await browser.newContext({ viewport: SIZES[device], deviceScaleFactor: SCALE, hasTouch: device === 'phone' });
+  // reduced motion: no reveal, no camera tweens, no auto-rotate, so software WebGL goes idle
+  // between states and every screenshot gets its frame
+  const ctx = await browser.newContext({ viewport: SIZES[device], deviceScaleFactor: SCALE, hasTouch: device === 'phone', reducedMotion: 'reduce' });
   const page = await ctx.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
   const shot = async (name) => {
     await sleep(350);
     const file = path.join(OUT, `${device}-${name}.${process.env.FORMA_SHOT_EXT || 'jpg'}`);
-    await page.screenshot({ path: file, type: file.endsWith('.png') ? 'png' : 'jpeg', quality: file.endsWith('.png') ? undefined : 88 });
+    await page.screenshot({ path: file, type: file.endsWith('.png') ? 'png' : 'jpeg', quality: file.endsWith('.png') ? undefined : 88, timeout: 120000 });
     console.log('  ', path.basename(file));
   };
   const count = () => page.evaluate(() => document.querySelectorAll('.history-row').length);
