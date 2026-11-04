@@ -15,6 +15,7 @@ import { mountShortcuts } from './ui/shortcuts';
 import { mountStage } from './ui/stage';
 import { mountToasts } from './ui/toast';
 import { mountTopbar } from './ui/topbar';
+import { mountTour } from './ui/tour';
 import { Viewer, webglAvailable } from './viewer/viewer';
 
 const app = new App();
@@ -38,7 +39,10 @@ const sheet = (name: 'create' | 'print', panel?: 'create' | 'history') => () => 
 const tabbar = h('nav', { class: 'tabbar', 'aria-label': 'Pannelli' },
   tab('Crea', 'create', sheet('create', 'create')),
   tab('Stampa', 'print', sheet('print')),
-  tab('Cronologia', 'history', sheet('create', 'history')));
+  tab('Cronologia', 'history', sheet('create', 'history')),
+  // the guided tour (wide screens have it in the top bar)
+  h('button', { class: 'tabbar-btn tour-start', type: 'button', 'aria-pressed': 'false', 'data-tab': 'guide', onclick: () => app.startTour() },
+    icon('guide'), h('span', null, 'Guida')));
 root.append(topbar, h('main', { class: 'workspace' }, left, viewport, right), tabbar);
 mountToasts(viewport);
 
@@ -68,6 +72,7 @@ const leftApi = mountLeftPanel(left, app);
 mountRightPanel(right, app);
 mountStage(viewport, app);
 mountShortcuts(document.body, app, leftApi.focusPrompt);
+mountTour(document.body, app);
 
 // -- a photo or a mesh dropped anywhere in the window, or pasted ------------------------------
 const take = (f: File) => {
@@ -122,7 +127,8 @@ const syncSheets = (s: AppState) => {
   document.body.classList.toggle('has-sheet', !!s.sheet);
   tabbar.querySelectorAll<HTMLElement>('.tabbar-btn').forEach((b) => {
     const t = b.dataset.tab;
-    const on = t === 'print' ? s.sheet === 'print' : s.sheet === 'create' && (t === 'history') === (s.panel === 'history');
+    const on = t === 'guide' ? s.tour !== null
+      : t === 'print' ? s.sheet === 'print' : s.sheet === 'create' && (t === 'history') === (s.panel === 'history');
     b.setAttribute('aria-pressed', String(on));
   });
 };

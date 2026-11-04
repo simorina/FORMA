@@ -30,6 +30,7 @@ const paths: Record<string, string> = {
   section: '<path d="M8 2l5.25 3v6L8 14 2.75 11V5z"/><path d="M2.75 8.25L8 11.25l5.25-3"/>',
   rename: '<path d="M2.75 13.25h10.5"/><path d="M9.6 2.9l2 2-5.9 5.9-2.6.6.6-2.6z"/>',
   wire: '<path d="M8 2.75l5.25 9.75H2.75z"/><path d="M5.4 7.6h5.2L8 12.5z"/>',
+  guide: '<path d="M8 4.6C6.5 3.5 4.6 3.1 2.75 3.25v8.6c1.85-.15 3.75.25 5.25 1.4 1.5-1.15 3.4-1.55 5.25-1.4v-8.6C11.4 3.1 9.5 3.5 8 4.6z"/><path d="M8 4.6v8.65"/>',
 };
 
 export function icon(name: keyof typeof paths | string, size = 16, label?: string): SVGSVGElement {

@@ -99,6 +99,15 @@ async function run(browser, device) {
   await shot('overhang');
   await page.keyboard.press('o');
 
+  // the guided tour: at the report on desktop, at the prompt on smaller screens
+  await page.click(device === 'desktop' ? '.topbar .tour-start' : '.tabbar .tour-start');
+  await page.waitForSelector('.tour:not([hidden])');
+  for (let i = 0; i < (device === 'desktop' ? 5 : 1); i++) await page.keyboard.press('ArrowRight');
+  await sleep(1200);
+  await shot('tour');
+  await page.keyboard.press('Escape');
+  await sleep(400);
+
   if (device === 'desktop') {
     // the print panel further down: materials, size and the bed-fit check
     await page.evaluate(() => {

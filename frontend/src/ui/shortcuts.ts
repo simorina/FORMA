@@ -24,12 +24,15 @@ export function mountShortcuts(host: HTMLElement, app: App, focusPrompt: () => v
     [['H'], 'Cronologia'],
     [['?'], 'Questo elenco'],
     [['Esc'], 'Chiudi, esci dalla modifica'],
+    [['←', '→'], 'Nella guida: passo precedente e successivo'],
   ];
   const close = h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Chiudi' }, icon('close'));
+  const guide = h('button', { class: 'btn btn-secondary btn-small', type: 'button', onclick: () => app.startTour() }, icon('guide'), 'Avvia la guida');
   const dialog = h('div', { class: 'dialog', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'shortcuts-title', tabindex: -1 },
     h('div', { class: 'dialog-head' }, h('h2', { id: 'shortcuts-title', class: 'section-title' }, 'Scorciatoie da tastiera'), close),
     h('dl', { class: 'shortcut-list' }, list.map(([keys, what]) =>
-      h('div', { class: 'shortcut' }, h('dt', null, keys.map((k) => h('kbd', null, k))), h('dd', null, what)))));
+      h('div', { class: 'shortcut' }, h('dt', null, keys.map((k) => h('kbd', null, k))), h('dd', null, what)))),
+    h('div', { class: 'dialog-foot' }, h('p', { class: 'meta' }, 'Prima volta qui? Un giro dell’interfaccia in nove passi.'), guide));
   const scrim = h('div', { class: 'scrim' }, dialog);
   scrim.hidden = true;
   host.appendChild(scrim);
@@ -55,9 +58,10 @@ export function mountShortcuts(host: HTMLElement, app: App, focusPrompt: () => v
     const cmd = e.metaKey || e.ctrlKey;
     const sculpt = app.viewer?.sculpt;
 
+    if (s.tour !== null) return; // the guided tour has its own keys
     if (s.shortcuts) {
       if (k === 'Escape' || k === '?') { e.preventDefault(); setOpen(false); }
-      if (k === 'Tab') { e.preventDefault(); close.focus(); } // keep focus in the dialog
+      if (k === 'Tab') { e.preventDefault(); (document.activeElement === close ? guide : close).focus(); } // keep focus in the dialog
       return;
     }
     if (cmd && k === 'Enter') {

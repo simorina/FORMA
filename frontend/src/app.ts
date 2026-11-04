@@ -8,6 +8,7 @@ import {
 } from './lib/api';
 import { DEFAULT_FILAMENT, filamentByKey, uiColor } from './lib/filaments';
 import { estimate, materialByKey, type Estimate } from './lib/materials';
+import { TOUR_STEPS } from './lib/tour';
 import { PRINTERS, fitOnBed, type Printer } from './lib/printers';
 import { createStore, saved, type Store } from './lib/store';
 import { title } from './lib/format';
@@ -66,6 +67,9 @@ export interface AppState {
   panel: Panel;
   sheet: Sheet;
   shortcuts: boolean;
+  /** the guided tour's step, or null when it is closed */
+  tour: number | null;
+  tourSeen: boolean;
   viewerError: string | null;
 }
 
@@ -117,6 +121,8 @@ function initial(): AppState {
     panel: 'create',
     sheet: null,
     shortcuts: false,
+    tour: null,
+    tourSeen: saved.get('tourSeen', false),
     viewerError: null,
   };
 }
@@ -638,5 +644,23 @@ export class App {
 
   setPanel(panel: Panel): void {
     this.store.set({ panel });
+  }
+
+  // -- guided tour -------------------------------------------------------------------------
+  /** Open the guided tour at its first step; the "new" mark on its button goes away. */
+  startTour(): void {
+    saved.set('tourSeen', true);
+    this.store.set({ tour: 0, tourSeen: true, shortcuts: false });
+  }
+
+  /** Go to a step of the tour; past the last one the tour closes. */
+  tourStep(i: number): void {
+    if (this.state.tour === null) return;
+    if (i >= TOUR_STEPS.length) this.endTour();
+    else this.store.set({ tour: Math.max(0, i) });
+  }
+
+  endTour(): void {
+    if (this.state.tour !== null) this.store.set({ tour: null });
   }
 }

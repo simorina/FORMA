@@ -139,7 +139,8 @@ export function mountStage(root: HTMLElement, app: App): void {
         h('p', { class: 'kicker' }, 'Atelier di stampa 3D'),
         h('h2', { class: 'stage-title stage-hero' }, 'Il piatto ', h('em', null, 'è vuoto')),
         h('p', null, 'Descrivi un oggetto, carica una foto o una mesh da riparare. Forma lo modella in 3D, lo ripara e lo prepara in millimetri per la tua stampante.'),
-        h('p', { class: 'meta' }, honestNote(s)));
+        h('p', { class: 'meta' }, honestNote(s)),
+        h('button', { class: 'btn btn-secondary btn-small stage-tour', type: 'button', onclick: () => app.startTour() }, icon('guide'), 'Scopri come funziona'));
     }
 
     // overhang legend and section slider

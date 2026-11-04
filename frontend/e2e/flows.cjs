@@ -109,6 +109,38 @@ const step = async (name, fn) => {
     assert.ok(await page.isVisible('.btn-download'));
   });
 
+  await step('guided tour: opens from the top bar, walks nine steps, gives the state back', async () => {
+    await blur();
+    const isNew = () => page.evaluate(() => document.querySelector('.topbar .tour-start').classList.contains('is-new'));
+    assert.equal(await isNew(), true);
+    await page.click('.topbar .tour-start');
+    await page.waitForSelector('.tour:not([hidden]) .tour-card');
+    assert.match(await text('.tour-title'), /Benvenuto/);
+    assert.match(await text('.tour-kicker'), /\bI \/ IX/);
+    assert.equal(await isNew(), false); // the gold dot goes once the tour has been opened
+    await page.keyboard.press('ArrowRight');
+    assert.match(await text('.tour-title'), /Descrivi/);
+    // the other shortcuts sleep while the tour is open
+    await page.keyboard.press('h');
+    assert.equal(await page.isVisible('#view-history'), false);
+    await page.click('.tour-next');
+    await page.click('.tour-back');
+    assert.match(await text('.tour-kicker'), /\bII \/ IX/);
+    for (let i = 2; i < 9; i++) await page.click('.tour-next');
+    assert.match(await text('.tour-title'), /Modifica, cronologia/);
+    assert.match(await text('.tour-next'), /Fine/i);
+    await page.click('.tour-next');
+    assert.equal(await page.isVisible('.tour'), false);
+    // Esc leaves from any step, gives the focus back to the button and the panels as they were
+    await page.click('.topbar .tour-start');
+    await page.waitForSelector('.tour:not([hidden])');
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('Escape');
+    assert.equal(await page.isVisible('.tour'), false);
+    assert.equal(await page.evaluate(() => document.activeElement?.classList.contains('tour-start')), true);
+    assert.equal(await page.isVisible('#view-create'), true);
+  });
+
   await step('filament swatch recolours the data hue', async () => {
     const css = (name) => page.evaluate((n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim(), name);
     await page.click('.swatch[data-key="azzurro"]');

@@ -1,8 +1,8 @@
 # Lavoro aperto: cosa manca a Forma e come spendere 100 $
 
 Questo documento è per chi prende in mano il progetto. Tutto il resto (pipeline di stampa,
-interfaccia, modifica a mano, export, test) è fatto e verificato: 101 test pytest, 66 vitest,
-23 flussi end-to-end (`make test`, `make e2e`). Qui c'è solo ciò che **non è stato possibile
+interfaccia, modifica a mano, export, test) è fatto e verificato: 101 test pytest, 75 vitest,
+24 flussi end-to-end (`make test`, `make e2e`). Qui c'è solo ciò che **non è stato possibile
 verificare** nell'ambiente di sviluppo originale, in ordine di priorità.
 
 ## Prima di cominciare (10 minuti)

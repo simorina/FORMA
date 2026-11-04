@@ -19,6 +19,10 @@ modificabile a mano nel browser.
   finestra (o incollalo) e viene chiuso, reso manifold e preparato. Anche una foto si può
   trascinare o incollare.
 - **Rinomina** un modello cliccando sul suo nome in alto: il nome passa anche ai file esportati.
+- **Guida**: il tasto *Guida* in alto (su tablet e telefono nella barra in basso, e anche nella
+  copertina del primo avvio) fa un giro dell'interfaccia in nove passi. Ogni passo apre il pannello
+  giusto, evidenzia la zona e spiega cosa fa; ← → per muoverti, Esc per uscire. Alla fine pannelli e
+  modifica tornano com'erano.
 - **Pipeline di stampa**: rimozione dei frammenti, chiusura dei buchi, ricostruzione voxel se
   serve, normali, orientamento (in piedi livellato, **meno supporti**, disteso), scala in mm,
   **base piana** (taglia il fondo per più presa sul piatto), svuotamento con pareti misurate dalla superficie vera, base d'appoggio, semplificazione che non
@@ -61,12 +65,15 @@ Lo stile si chiama **Atelier**: il lookbook di una maison di moda, su carta avor
 | Stadi con l'immagine di partenza (stato bloccato a metà per la foto) | Mappa degli sbalzi da sostenere |
 | ![Sezione](docs/screenshots/desktop-section.jpg) | ![Modifica](docs/screenshots/desktop-edit.jpg) |
 | Sezione di una sfera svuotata: le pareti | Modifica con simmetria X |
+| ![Guida](docs/screenshots/desktop-tour.jpg) | ![Materiali](docs/screenshots/desktop-materials.jpg) |
+| La guida al passo VI: resoconto ed esportazione | Stampante, filamento e verifica del piatto |
 
 Su tablet e telefono il viewport viene prima e i pannelli diventano fogli dal basso:
 
 | | | |
 | --- | --- | --- |
 | ![Telefono, pronto](docs/screenshots/phone-ready.jpg) | ![Telefono, anteprima](docs/screenshots/phone-draft.jpg) | ![Tablet](docs/screenshots/tablet-ready.jpg) |
+| ![Telefono, guida](docs/screenshots/phone-tour.jpg) | ![Telefono, modifica](docs/screenshots/phone-edit.jpg) | ![Tablet, guida](docs/screenshots/tablet-tour.jpg) |
 
 ## Avvio rapido
 
@@ -87,7 +94,7 @@ Altri modi:
 | `make serve` | Build di produzione servita dal backend: http://localhost:8000 |
 | `make docker` | Immagine CPU con Docker Compose: http://localhost:8000 |
 | `make test` | pytest (backend) e vitest (frontend) |
-| `make e2e` | 23 flussi end-to-end in Chromium su dati temporanei (serve Playwright: `cd frontend && npm i --no-save playwright && npx playwright install chromium`) |
+| `make e2e` | 24 flussi end-to-end in Chromium su dati temporanei (serve Playwright: `cd frontend && npm i --no-save playwright && npx playwright install chromium`) |
 | `make screenshots` | Rifà le schermate di questo README in `docs/screenshots` (desktop 1440×900, tablet 768×1024, telefono 390×844, a 2×) con `frontend/e2e/screens.cjs`, su dati temporanei e provider offline (serve Playwright, come per `make e2e`) |
 | `make help` | Tutti i comandi |
 
@@ -135,6 +142,8 @@ tenere attiva "Mostrami prima l'immagine": il 3D parte solo quando l'immagine ti
 
 ## Uso
 
+La prima volta premi **Guida**: in nove passi ti mostra dove si trova tutto. In breve:
+
 1. **Descrivi l'oggetto** (o trascina una foto, o una mesh da riparare). Gli esempi a sinistra sono
    un buon punto di partenza.
 2. **Approva l'immagine** o chiedine un'altra; poi segui gli stadi *Immagine → Forma 3D →
@@ -167,6 +176,7 @@ tenere attiva "Mostrami prima l'immagine": il 3D parte solo quando l'immagine ti
 | H | Cronologia |
 | ? | Elenco delle scorciatoie |
 | Esc | Chiudi, esci dalla modifica o dalla sezione |
+| ← · → | Nella guida: passo precedente · successivo (Esc per uscire) |
 
 ## Scelta del modello
 
@@ -223,9 +233,9 @@ puntare a un tuo duplicato), cartella dei dati.
 ## Qualità
 
 - **Backend**: 101 test pytest (pipeline, provider con client Gradio simulato, API, export).
-- **Frontend**: 66 test vitest (curve di caduta, saldatura, pennelli, undo/redo, STL, contrasto
-  sulla carta, piatto, materiali e stime).
-- **End-to-end**: 23 flussi in Chromium contro il backend vero (`make e2e`).
+- **Frontend**: 75 test vitest (curve di caduta, saldatura, pennelli, undo/redo, STL, contrasto
+  sulla carta, piatto, materiali e stime, passi e geometria della guida).
+- **End-to-end**: 24 flussi in Chromium contro il backend vero (`make e2e`), guida compresa.
 - La preparazione di una mesh AI da 327.000 triangoli rumorosa e bucata richiede circa 4 s con le
   impostazioni predefinite e 7 s con svuotamento e base, su una CPU da portatile.
 

@@ -72,6 +72,11 @@ export function mountTopbar(root: HTMLElement, app: App): void {
     if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); endRename(false); }
   });
   nameInput.addEventListener('blur', () => endRename(true));
+  const guideBtn = h(
+    'button',
+    { class: 'topbar-link tour-start hide-phone', type: 'button', title: 'Come funziona: la guida in nove passi', onclick: () => app.startTour() },
+    icon('guide'), h('span', null, 'Guida'),
+  );
   const editBtn = h(
     'button',
     { class: 'icon-btn', type: 'button', 'aria-label': 'Modifica la forma (E)', title: 'Modifica la forma · E', onclick: () => app.setEdit() },
@@ -97,7 +102,7 @@ export function mountTopbar(root: HTMLElement, app: App): void {
     h('div', { class: 'brand' }, mark(26), h('span', { class: 'wordmark' }, 'Forma')),
     h('span', { class: 'vrule', 'aria-hidden': 'true' }),
     h('div', { class: 'object' }, name, pill),
-    h('div', { class: 'topbar-actions' }, editBtn, historyBtn, helpBtn, rule, download),
+    h('div', { class: 'topbar-actions' }, guideBtn, editBtn, historyBtn, helpBtn, rule, download),
   );
 
   const update = (s: AppState) => {
