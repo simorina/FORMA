@@ -42,6 +42,18 @@ export function weld(positions: Float32Array, index: Uint32Array | null, toleran
   return { positions: new Float32Array(out), index: new Uint32Array(tris), remap };
 }
 
+/**
+ * A per-vertex attribute (the model's colours) moved onto the welded vertices: each welded
+ * vertex takes the value of the last original vertex merged into it.
+ */
+export function weldAttribute(values: Float32Array, remap: Uint32Array, itemSize: number, count: number): Float32Array {
+  const out = new Float32Array(count * itemSize);
+  for (let i = 0; i < remap.length; i++) {
+    out.set(values.subarray(i * itemSize, (i + 1) * itemSize), remap[i] * itemSize);
+  }
+  return out;
+}
+
 /** Compressed sparse rows: the items of row r are list[offsets[r] .. offsets[r + 1]). */
 export interface CSR {
   offsets: Uint32Array;

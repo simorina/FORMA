@@ -77,8 +77,8 @@ export const EDITABLE = ['target_size_mm', 'orientation', 'flat_bottom_mm', 'hol
 
 const FALLBACK_SETTINGS: PrintSettings = {
   target_size_mm: 100, orientation: 'upright', flat_bottom_mm: 0, hollow: false, wall_mm: 2, base_plate: false,
-  base_thickness_mm: 2, base_margin_mm: 3, decimate: true, target_faces: 150000, remove_debris: true,
-  repair_resolution: 192,
+  base_thickness_mm: 2, base_margin_mm: 3, decimate: true, target_faces: 2000000, remove_debris: true,
+  repair_resolution: 384,
 };
 
 function initial(): AppState {
@@ -535,7 +535,7 @@ export class App {
   takeFile(f: File, opts: { quiet?: boolean } = {}): 'mesh' | 'image' | null {
     const ext = f.name.split('.').pop()?.toLowerCase() ?? '';
     if (f.size > MAX_UPLOAD) {
-      toast('Il file supera 40 MB.', { tone: 'negative' });
+      toast('Il file supera 128 MB.', { tone: 'negative' });
       return null;
     }
     if (MESH_EXTENSIONS.includes(ext)) {

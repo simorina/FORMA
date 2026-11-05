@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bounds, computeNormals, updateNormals, vertexFaces, vertexNeighbors, weld } from './mesh';
+import { bounds, computeNormals, updateNormals, vertexFaces, vertexNeighbors, weld, weldAttribute } from './mesh';
 import { grid, splitCube, volume } from './fixtures';
 
 describe('weld', () => {
@@ -23,6 +23,18 @@ describe('weld', () => {
     const p = Float32Array.from([0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0]);
     const w = weld(p, Uint32Array.from([0, 1, 2, 0, 2, 3]));
     expect(Array.from(w.index)).toEqual([0, 1, 2]);
+  });
+
+  it('carries a per-vertex attribute (the model colours) to the welded vertices', () => {
+    const { positions, index } = splitCube();
+    // each split vertex coloured by where it is: the copies of one corner share their colour
+    const colors = positions.map((p) => (p + 1) / 2);
+    const w = weld(positions, index);
+    const welded = weldAttribute(colors, w.remap, 3, w.positions.length / 3);
+    expect(welded.length).toBe(24);
+    for (let v = 0; v < 8; v++) {
+      for (let k = 0; k < 3; k++) expect(welded[3 * v + k]).toBe((w.positions[3 * v + k] + 1) / 2);
+    }
   });
 
   it('accepts non-indexed geometry', () => {

@@ -11,6 +11,8 @@ from typing import Any
 import trimesh
 from PIL import Image
 
+from ..pipeline.colors import colored_mesh, concatenate
+
 # Prompt template used for every text->image step: we want a single, solid,
 # well-lit object that image->3D models can lift into clean printable geometry.
 PRINTABLE_TEMPLATE = (
@@ -142,23 +144,23 @@ class Provider(ABC):
 
 
 def as_single_mesh(obj: Any) -> trimesh.Trimesh:
-    """Flatten a trimesh Scene / list into one Trimesh (geometry only)."""
+    """Flatten a trimesh Scene / list into one Trimesh, keeping per-vertex colours (from a
+    texture, a material or vertex/face colours; see ``pipeline.colors``) and nothing else."""
     if isinstance(obj, trimesh.Trimesh):
-        return obj
+        return colored_mesh(obj)
     if isinstance(obj, trimesh.Scene):
         meshes = [g for g in obj.dump() if isinstance(g, trimesh.Trimesh)] if hasattr(
             obj, "dump"
         ) else []
         if not meshes:
             raise ProviderError("Il file 3D ricevuto non contiene geometria.")
-        return trimesh.util.concatenate(meshes)
+        return concatenate(meshes)
     if isinstance(obj, (list, tuple)):
-        return trimesh.util.concatenate([as_single_mesh(o) for o in obj])
+        return concatenate([as_single_mesh(o) for o in obj])
     raise ProviderError(f"Formato mesh non supportato: {type(obj).__name__}")
 
 
 def load_mesh_file(path: str, file_type: str | None = None) -> trimesh.Trimesh:
+    """Geometry plus per-vertex colours, when the file has any (an AI model's texture)."""
     loaded = trimesh.load(path, file_type=file_type, force=None, process=False)
-    mesh = as_single_mesh(loaded)
-    # Strip visuals: we only care about geometry for printing.
-    return trimesh.Trimesh(vertices=mesh.vertices, faces=mesh.faces, process=False)
+    return as_single_mesh(loaded)

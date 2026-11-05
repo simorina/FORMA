@@ -21,7 +21,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { CSS2DRenderer } from 'three/addons/renderers/CSS2DRenderer.js';
 import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from 'three-mesh-bvh';
-import { computeNormals, weld } from '../edit/mesh';
+import { computeNormals, weld, weldAttribute } from '../edit/mesh';
 import { Sculpt, type SculptState } from '../edit/sculpt';
 import { writeSTL } from '../edit/stl';
 import type { Printer } from '../lib/printers';
@@ -163,6 +163,11 @@ const HEAD_CAP = `
 `;
 const WORLD_POS_VERTEX = '#include <project_vertex>\n vWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;';
 
+const WHITE = new THREE.Color(0xffffff);
+const srgbToLinear = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+// parts without colour inside a coloured model: the backend's neutral grey (160 / 255)
+const NEUTRAL_LINEAR = srgbToLinear(160 / 255);
+
 export class Viewer {
   readonly sculpt: Sculpt;
   private readonly renderer: THREE.WebGLRenderer;
@@ -221,6 +226,10 @@ export class Viewer {
   private editing = false;
   private loadToken = 0;
   private filament: string | null = null;
+  // the model's own colours (an AI model's texture): the surface shows them under white light;
+  // the filament keeps colouring the overhang paint, the section, the wire and the print head
+  private hasColors = false;
+  private readonly filamentColor = new THREE.Color(0xff7a1a); // at the dissolve's point
   // what moves: each one is stepped by the loop and asks for frames only while it runs
   private readonly tint = new Glide(1); // 0 → 1: from paletteFrom to paletteTo
   private readonly paletteFrom = palette();
@@ -435,7 +444,7 @@ export class Viewer {
     this.sculpt.setCursorColor(light ? 0x17130f : 0xffffff);
     // cross-dissolve from the colours on screen now (a dissolve may be under way)
     const from = this.paletteFrom;
-    from.color.copy(this.material.color);
+    from.color.copy(this.filamentColor);
     from.over.copy(this.overhangU.uOverColor.value);
     from.cut.copy(this.overhangU.uCutColor.value);
     from.wire.copy(this.wireMaterial.color);
@@ -447,7 +456,7 @@ export class Viewer {
   }
 
   /** The colour overhangs are painted in, for the legend (of the filament, not of a dissolve). */
-  overhangColor(hex = this.filament ?? '#' + this.material.color.getHexString()): string {
+  overhangColor(hex = this.filament ?? '#' + this.filamentColor.getHexString()): string {
     const hsl = { h: 0, s: 0, l: 0 };
     new THREE.Color(hex).getHSL(hsl);
     const warm = hsl.s > 0.25 && (hsl.h < 0.14 || hsl.h > 0.88);
@@ -526,19 +535,28 @@ export class Viewer {
       if (m.isMesh) parts.push(m.geometry.clone().applyMatrix4(m.matrixWorld));
     });
     if (!parts.length) throw new Error('Il file non contiene una mesh');
+    const colored = parts.some((g) => g.hasAttribute('color'));
     const flat: number[] = [];
+    const flatColors: number[] = [];
     for (const g of parts) {
       const pos = g.getAttribute('position');
+      const col = colored ? g.getAttribute('color') as THREE.BufferAttribute | undefined : undefined;
       const idx = g.getIndex();
       const count = idx ? idx.count : pos.count;
       for (let i = 0; i < count; i++) {
         const v = idx ? idx.getX(i) : i;
         flat.push(pos.getX(v), pos.getY(v), pos.getZ(v));
+        // the backend writes sRGB bytes (as trimesh reads them); the shader works in linear
+        if (col) flatColors.push(srgbToLinear(col.getX(v)), srgbToLinear(col.getY(v)), srgbToLinear(col.getZ(v)));
+        else if (colored) flatColors.push(NEUTRAL_LINEAR, NEUTRAL_LINEAR, NEUTRAL_LINEAR);
       }
       g.dispose();
     }
     const welded = weld(new Float32Array(flat), null);
-    this.setGeometry(welded.positions, welded.index);
+    const colors = colored
+      ? weldAttribute(new Float32Array(flatColors), welded.remap, 3, welded.positions.length / 3)
+      : null;
+    this.setGeometry(welded.positions, welded.index, colors);
     const size = this.size()!;
     this.updateFit();
     const still = this.still();
@@ -667,7 +685,7 @@ export class Viewer {
     return this.calm;
   }
 
-  private setGeometry(positions: Float32Array, index: Uint32Array): void {
+  private setGeometry(positions: Float32Array, index: Uint32Array, colors: Float32Array | null): void {
     this.sculpt.detach();
     this.disposeModel();
     const g = new THREE.BufferGeometry();
@@ -676,6 +694,14 @@ export class Viewer {
     g.setAttribute('position', pos);
     g.setAttribute('normal', nor);
     g.setIndex(new THREE.BufferAttribute(index, 1));
+    // the sculpt brushes move positions only: the colours stay with their vertices
+    if (colors) g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    if (this.hasColors !== !!colors) {
+      this.hasColors = !!colors;
+      this.material.vertexColors = this.reflectionMaterial.vertexColors = this.hasColors;
+      this.material.needsUpdate = this.reflectionMaterial.needsUpdate = true;
+      this.applyPalette();
+    }
     g.computeBoundingBox();
     g.computeBoundingSphere();
     g.computeBoundsTree();
@@ -739,7 +765,7 @@ export class Viewer {
     this.headU.uHeadSpin.value = (now - r.start) * HEAD_SPIN;
     // the fresh layer: the filament lifted and warmed by the head's gold (a model rising again:
     // a plain cut, a little darker than its lit surface)
-    const cap = this.headU.uHeadCap.value, c = this.material.color, g = r.glow;
+    const cap = this.headU.uHeadCap.value, c = this.filamentColor, g = r.glow;
     cap.setRGB(
       c.r * (0.62 + 0.28 * g) + HEAD_GOLD.r * 0.32 * g,
       c.g * (0.62 + 0.28 * g) + HEAD_GOLD.g * 0.32 * g,
@@ -809,7 +835,9 @@ export class Viewer {
   /** The filament's colours at the dissolve's point (model, reflection, overhang paint, cap, wire). */
   private applyPalette(): void {
     const k = this.tint.value, a = this.paletteFrom, b = this.paletteTo;
-    this.material.color.lerpColors(a.color, b.color, k);
+    this.filamentColor.lerpColors(a.color, b.color, k);
+    // a coloured model: white, so its vertex colours show as they are
+    this.material.color.copy(this.hasColors ? WHITE : this.filamentColor);
     this.reflectionMaterial.color.copy(this.material.color);
     this.overhangU.uOverColor.value.lerpColors(a.over, b.over, k);
     this.overhangU.uCutColor.value.lerpColors(a.cut, b.cut, k);

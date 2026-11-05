@@ -8,6 +8,8 @@ import zipfile
 import numpy as np
 import trimesh
 
+from .pipeline.colors import vertex_colors, with_colors
+
 FORMATS: dict[str, tuple[str, str]] = {
     "stl": ("model/stl", "stl"),
     "3mf": ("model/3mf", "3mf"),
@@ -21,6 +23,12 @@ Z_UP_TO_Y_UP = np.array([[1, 0, 0, 0], [0, 0, 1, 0], [0, -1, 0, 0], [0, 0, 0, 1]
 
 def _plain(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
     return trimesh.Trimesh(vertices=mesh.vertices.copy(), faces=mesh.faces.copy(), process=False)
+
+
+def _with_colors(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+    """Geometry plus per-vertex colours (when the model has them): OBJ and GLB carry them,
+    STL and 3MF stay single-colour."""
+    return with_colors(_plain(mesh), vertex_colors(mesh))
 
 
 def export_stl(mesh: trimesh.Trimesh) -> bytes:
@@ -49,12 +57,15 @@ def export_3mf(mesh: trimesh.Trimesh, name: str = "forma") -> bytes:
 
 
 def export_obj(mesh: trimesh.Trimesh) -> bytes:
-    text = trimesh.exchange.obj.export_obj(_plain(mesh), include_normals=True, include_texture=False)
+    # Colours as `v x y z r g b` (0-1): Bambu Studio maps them to the AMS filaments on import.
+    colored = vertex_colors(mesh) is not None
+    text = trimesh.exchange.obj.export_obj(_with_colors(mesh), include_normals=True,
+                                           include_color=colored, include_texture=False)
     return ("# Forma - units: millimetres, Z up\n" + text).encode("utf-8")
 
 
 def export_glb(mesh: trimesh.Trimesh, metres: bool = True) -> bytes:
-    m = _plain(mesh)
+    m = _with_colors(mesh)
     if metres:
         m.apply_transform(Z_UP_TO_Y_UP)
         m.apply_scale(0.001)

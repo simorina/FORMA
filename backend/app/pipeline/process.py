@@ -13,6 +13,7 @@ import numpy as np
 import trimesh
 from scipy import ndimage
 
+from .colors import carry
 from .fmt import it_num
 from .repair import (
     DECIMATION_LOCK,
@@ -30,6 +31,10 @@ StepFn = Callable[[str, float], None]
 
 ORIENTATIONS = ("upright", "supports", "flat", "keep")
 
+# Meshes above this many triangles are simplified before the repair (see process_mesh).
+PRE_DECIMATE_ABOVE = 2_000_000
+PRE_DECIMATE_TO = 1_000_000
+
 
 @dataclass
 class PrintSettings:
@@ -46,9 +51,11 @@ class PrintSettings:
     base_thickness_mm: float = 2.0
     base_margin_mm: float = 3.0
     decimate: bool = True
-    target_faces: int = 150_000
+    # The AI models give up to ~1M triangles: keep them all (simplification only above this).
+    target_faces: int = 2_000_000
     remove_debris: bool = True
-    repair_resolution: int = 192
+    # Voxel rebuild, last resort of the repair: 384³ is ~0.3 mm on a 120 mm print.
+    repair_resolution: int = 384
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> PrintSettings:
@@ -355,13 +362,18 @@ def process_mesh(
     # Normalise scale early so voxel-based repair works in predictable units.
     work = scale_to(place_on_bed(work), s.target_size_mm)
 
-    # Pre-decimate huge AI meshes so repair stays fast (final decimation later).
-    if len(work.faces) > max(s.target_faces * 3, 600_000):
-        work = decimate(work, max(s.target_faces * 2, 300_000))
+    # Repair sees every triangle: simplifying an AI mesh (up to ~1M triangles) before
+    # repairing it opens new defects and sends it to the voxel rebuild, which blurs the
+    # detail. Only very large meshes (scans) are reduced first, so repair stays fast.
+    # Colours: rotations, scaling and moves keep them; every step below that rebuilds the
+    # mesh gets them back from the mesh it started from (carry: nearest vertex, same frame).
+    if len(work.faces) > max(s.target_faces, PRE_DECIMATE_ABOVE):
+        work = carry(work, decimate(work, max(s.target_faces, PRE_DECIMATE_TO)))
         steps.append("pre-semplificazione")
 
     notify("Riparazione", 0.25)
-    work, repairs = make_watertight(work, s.repair_resolution)
+    repaired, repairs = make_watertight(work, s.repair_resolution)
+    work = carry(work, repaired)
     steps += repairs
 
     notify("Orientamento", 0.45)
@@ -382,7 +394,7 @@ def process_mesh(
         notify("Base piana", 0.52)
         cut = cut_flat_bottom(work, s.flat_bottom_mm)
         if cut is not None:
-            work = scale_to(place_on_bed(cut), s.target_size_mm)
+            work = scale_to(place_on_bed(carry(work, cut)), s.target_size_mm)
             steps.append(f"fondo tagliato in piano ({it_num(s.flat_bottom_mm)} mm)")
         else:
             steps.append("base piana saltata (taglio troppo alto per questo modello)")
@@ -391,14 +403,15 @@ def process_mesh(
         notify("Svuotamento", 0.6)
         hollowed = hollow(work, s.wall_mm)
         if hollowed is not None:
-            work = hollowed
+            work = carry(work, hollowed)
             steps.append(f"svuotato, pareti {it_num(s.wall_mm)} mm")
         else:
             steps.append("svuotamento saltato (pareti troppo sottili)")
 
     if s.base_plate:
         notify("Base", 0.72)
-        work = add_base_plate(place_on_bed(work), s.base_thickness_mm, s.base_margin_mm)
+        placed = place_on_bed(work)
+        work = carry(placed, add_base_plate(placed, s.base_thickness_mm, s.base_margin_mm))
         steps.append(f"base {it_num(s.base_thickness_mm)} mm aggiunta")
         # The requested size is the size of the whole print, plate included.
         if work.extents.max() > s.target_size_mm * 1.0005:
@@ -412,7 +425,7 @@ def process_mesh(
             solid = to_manifold(candidate)
             candidate = from_manifold(solid) if solid is not None else candidate
         if candidate.is_watertight or not work.is_watertight:
-            work = candidate
+            work = carry(work, candidate)
             steps.append(f"semplificato {before:,} → {len(work.faces):,} triangoli".replace(",", "."))
 
     notify("Verifica", 0.92)

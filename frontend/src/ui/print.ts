@@ -32,6 +32,8 @@ const FORMATS: { key: ExportFormat; label: string; note: string }[] = [
   { key: 'obj', label: 'OBJ', note: 'millimetri, Z in alto, per la modellazione' },
   { key: 'glb', label: 'GLB', note: 'metri, Y in alto (glTF), per il web e la AR' },
 ];
+// a model with its own colours: OBJ carries them, and Bambu Studio maps them to the AMS
+const OBJ_COLOR_NOTE = 'millimetri, con i colori: Bambu Studio li abbina all’AMS';
 
 // -- the panels' motion ------------------------------------------------------------------------
 
@@ -523,18 +525,22 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
       render(notes, warn, fb ? h('p', { class: 'note' }, `Generato con ${c.model}: ${fb} non era disponibile.`) : null, repairs, time);
       if (live && fresh) void stagger(notes.children, (el, d) => enter.fade(el, d, DUR.base), 50, 4, 420);
     });
-    formatsView(FORMATS.map((f) => c.urls.export[f.key]), () => {
+    const colored = !!c.has_colors;
+    const best: ExportFormat = colored ? 'obj' : '3mf';
+    formatsView([...FORMATS.map((f) => c.urls.export[f.key]), best], () => {
       render(formats, FORMATS.map((f) => h('a', {
-        class: f.key === '3mf' ? 'btn btn-secondary is-recommended' : 'btn btn-secondary',
-        href: c.urls.export[f.key], download: '', title: f.note,
+        class: f.key === best ? 'btn btn-secondary is-recommended' : 'btn btn-secondary',
+        href: c.urls.export[f.key], download: '', title: colored && f.key === 'obj' ? OBJ_COLOR_NOTE : f.note,
       }, f.label)));
       // uncovered from the left: clip only, the links never move under the pointer
       if (live && fresh) void enter.wipe(formats, 0, 'left', DUR.base);
     });
-    const slug = exportName(c, '3mf');
-    fileView([slug], () => {
+    const slug = exportName(c, best);
+    fileView([slug, best], () => {
       const slugEl = h('span', { class: 'file-slug' }, slug);
-      fileName.replaceChildren(slugEl, h('span', null, '3MF consigliato: conserva i millimetri nello slicer.'));
+      fileName.replaceChildren(slugEl, h('span', null, colored
+        ? 'Con i colori: OBJ. In Bambu Studio scegli quanti colori usare e lo slot AMS di ciascuno.'
+        : '3MF consigliato: conserva i millimetri nello slicer.'));
       if (live) void swap(slugEl, fresh ? 160 : 0);
     });
   };

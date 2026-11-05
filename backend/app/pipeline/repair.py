@@ -1,8 +1,9 @@
 """Mesh repair: watertight + manifold, with progressively stronger fallbacks.
 
-1. trimesh cleanup (merge, degenerate/duplicate faces, normals, hole filling)
+1. trimesh cleanup (merge, degenerate/duplicate faces, normals, hole filling), with
+   manifold3d separating edges where two parts touch (before and after hole filling)
 2. pymeshlab non-manifold repair + hole closing (optional dependency)
-3. voxel remesh (always yields a closed 2-manifold surface)
+3. voxel remesh (always yields a closed 2-manifold surface, but blurs fine detail)
 Finally we validate with manifold3d, the same kernel used for booleans.
 """
 
@@ -247,7 +248,7 @@ def grid_to_mesh(grid: np.ndarray, origin: np.ndarray, pitch: float, smooth: int
     return out
 
 
-def voxel_remesh(mesh: trimesh.Trimesh, resolution: int = 192) -> trimesh.Trimesh:
+def voxel_remesh(mesh: trimesh.Trimesh, resolution: int = 384) -> trimesh.Trimesh:
     """Rebuild a closed surface from a filled voxelization (+ Taubin smoothing)."""
     pitch = (float(mesh.extents.max()) or 1.0) / resolution
     grid, origin = voxelize_solid(mesh, pitch)
@@ -258,26 +259,38 @@ def is_print_ok(mesh: trimesh.Trimesh) -> bool:
     return bool(mesh.is_watertight and mesh.is_winding_consistent and to_manifold(mesh) is not None)
 
 
+def _split_shared_edges(mesh: trimesh.Trimesh) -> trimesh.Trimesh | None:
+    """Valid for manifold3d (e.g. edge-touching bodies): its output splits shared edges."""
+    solid = to_manifold(mesh)
+    if solid is None:
+        return None
+    rebuilt = from_manifold(solid)
+    return rebuilt if rebuilt.is_watertight else None
+
+
 def make_watertight(
-    mesh: trimesh.Trimesh, voxel_resolution: int = 192
+    mesh: trimesh.Trimesh, voxel_resolution: int = 384
 ) -> tuple[trimesh.Trimesh, list[str]]:
     """Return a closed manifold mesh and the list of repairs applied (Italian)."""
     steps: list[str] = []
     m = basic_cleanup(mesh)
     if is_print_ok(m):
         return m, steps
-    solid = to_manifold(m)
-    if solid is not None:
-        # Valid for manifold3d (e.g. edge-touching bodies): its output splits shared edges.
-        rebuilt = from_manifold(solid)
-        if rebuilt.is_watertight:
-            steps.append("bordi condivisi separati")
-            return rebuilt, steps
+    rebuilt = _split_shared_edges(m)
+    if rebuilt is not None:
+        steps.append("bordi condivisi separati")
+        return rebuilt, steps
     trimesh.repair.fill_holes(m)
     trimesh.repair.fix_normals(m)
     if is_print_ok(m):
         steps.append("buchi chiusi")
         return m, steps
+    # AI meshes: a few tiny holes *and* edges where two parts touch. With the holes
+    # closed manifold3d can separate the edges, keeping every detail of the surface.
+    rebuilt = _split_shared_edges(m)
+    if rebuilt is not None:
+        steps.append("buchi chiusi, bordi condivisi separati")
+        return rebuilt, steps
     pm = _pymeshlab_repair(m)
     if pm is not None:
         pm = basic_cleanup(pm)

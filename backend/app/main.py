@@ -23,6 +23,7 @@ from . import __version__
 from .config import Settings, get_settings
 from .exporters import FORMATS, export_glb, export_mesh
 from .pipeline import PrintSettings
+from .pipeline.colors import carry
 from .pipeline.process import to_z_up
 from .providers import GenParams, ProviderError, all_providers, get_provider
 from .providers.base import as_single_mesh
@@ -30,7 +31,9 @@ from .service import JobManager, finalize, public_model
 from .storage import DraftStore, ModelStore
 
 log = logging.getLogger("forma")
-MAX_UPLOAD = 40 * 1024 * 1024
+# A model kept at full resolution (up to 2M triangles) comes back from the editor as a
+# binary STL of up to ~95 MB.
+MAX_UPLOAD = 128 * 1024 * 1024
 MESH_TYPES = {"stl", "obj", "ply", "glb", "gltf", "off", "3mf"}
 
 # Cache-Control for files whose name changes with their content (the frontend's build output).
@@ -90,7 +93,7 @@ def _print_settings(raw: str | None) -> PrintSettings:
 async def _read_upload(upload: UploadFile) -> bytes:
     data = await upload.read(MAX_UPLOAD + 1)
     if len(data) > MAX_UPLOAD:
-        raise HTTPException(413, "File troppo grande (max 40 MB)")
+        raise HTTPException(413, "File troppo grande (max 128 MB)")
     if not data:
         raise HTTPException(422, "File vuoto")
     return data
@@ -243,8 +246,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(422, f"Formato mesh non supportato: .{ext}")
             try:
                 loaded = trimesh.load(io.BytesIO(raw), file_type=ext, process=False)
-                mesh = as_single_mesh(loaded)
-                mesh = trimesh.Trimesh(mesh.vertices, mesh.faces, process=False)
+                mesh = as_single_mesh(loaded)  # geometry + per-vertex colours, if any
             except Exception as exc:
                 raise HTTPException(422, f"Impossibile leggere la mesh: {exc}") from exc
             if len(mesh.faces) == 0:
@@ -257,6 +259,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 meta = {"kind": "edit", "prompt": prompt or parent.get("prompt", ""),
                         "provider": parent.get("provider"), "model": parent.get("model"),
                         "parent_id": model_id}
+                # The editor sends an STL: the colours come back from the model it edited
+                # (same frame: millimetres, Z up), nearest vertex.
+                try:
+                    mesh = carry(store.load_processed(model_id), mesh)
+                except KeyError:
+                    pass
             # glTF/GLB uploads are Y-up; everything else (STL/OBJ/3MF/PLY) Z-up.
             # Edits come from our own viewer already Z-up in mm.
             up = "y" if ext in ("glb", "gltf") and meta["kind"] == "upload" else "z"

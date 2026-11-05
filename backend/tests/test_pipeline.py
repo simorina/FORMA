@@ -68,13 +68,58 @@ def test_voxel_remesh_closes_large_gap():
     assert out.volume == pytest.approx(s.convex_hull.volume, rel=0.15)
 
 
+def touching_boxes(offsets=([0, 0, 0], [1, 1, 0]), subdivisions=0) -> trimesh.Trimesh:
+    """Unit cubes that share an edge with the first one: 4 triangles on that edge, as
+    where two parts of an AI mesh touch."""
+    parts = []
+    for offset in offsets:
+        box = trimesh.creation.box()
+        box.apply_translation(offset)
+        v, f = box.vertices, box.faces
+        for _ in range(subdivisions):
+            v, f = trimesh.remesh.subdivide(v, f)
+        parts.append(trimesh.Trimesh(v, f, process=False))
+    return trimesh.util.concatenate(parts)
+
+
 def test_non_manifold_edge_is_fixed():
-    a = trimesh.creation.box()
-    b = trimesh.creation.box()
-    b.apply_translation([1, 1, 0])
-    fixed, steps = make_watertight(trimesh.util.concatenate([a, b]))
+    fixed, steps = make_watertight(touching_boxes())
     assert fixed.is_watertight
     assert steps
+
+
+def test_hole_beside_touching_parts_is_closed_without_voxel_rebuild():
+    """Pixal3D meshes can have a few tiny holes besides edges where two parts touch:
+    once the holes are filled manifold3d must get another chance, instead of the voxel
+    rebuild that blurs every detail of the model."""
+    mesh = touching_boxes()
+    on_far_side = np.nonzero(mesh.triangles_center[:, 0] < -0.49)[0]  # first cube's -X side
+    mesh.update_faces(np.arange(len(mesh.faces)) != on_far_side[0])
+    fixed, steps = make_watertight(mesh)
+    assert fixed.is_watertight
+    assert not any("voxel" in step for step in steps)
+    assert fixed.volume == pytest.approx(2.0, abs=1e-6)
+    assert len(fixed.faces) == 24
+
+
+def test_ai_sized_mesh_is_repaired_before_it_is_simplified():
+    """Simplifying a ~1M-triangle Pixal3D mesh before repairing it opened new defects and
+    sent 5 models out of 6 to the voxel rebuild: repair sees every triangle, the
+    simplification comes last."""
+    # 4 cubes x 12 triangles x 4^7 = 786,432 triangles, 3 edges shared with the first cube
+    mesh = touching_boxes(([0, 0, 0], [1, 1, 0], [1, -1, 0], [-1, 1, 0]), subdivisions=7)
+    res = process_mesh(mesh, PrintSettings(target_size_mm=100, target_faces=150_000))
+    assert "pre-semplificazione" not in res.steps
+    assert any(step.startswith("semplificato 786.432 →") for step in res.steps)
+    assert res.mesh.is_watertight
+
+
+def test_default_settings_keep_every_triangle_of_an_ai_mesh():
+    """The printed model keeps the full resolution the AI model gave (up to 2M triangles)."""
+    mesh = touching_boxes(([0, 0, 0],), subdivisions=7)  # 12 x 4^7 = 196,608 triangles
+    res = process_mesh(mesh, PrintSettings(target_size_mm=100))
+    assert len(res.mesh.faces) == 196_608
+    assert not any(step.startswith("semplificato") for step in res.steps)
 
 
 def test_fix_inverted_normals():

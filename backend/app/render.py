@@ -5,7 +5,9 @@ from __future__ import annotations
 import numpy as np
 import trimesh
 from PIL import Image, ImageDraw, ImageFilter
+from scipy.spatial import cKDTree
 
+from .pipeline.colors import vertex_colors
 from .pipeline.repair import DECIMATION_LOCK
 
 SHADOW_BLUR = 14
@@ -39,6 +41,20 @@ def _decimated(mesh: trimesh.Trimesh, max_faces: int) -> tuple[np.ndarray, np.nd
     except Exception:  # pragma: no cover - fast_simplification missing
         idx = np.random.default_rng(0).choice(len(faces), max_faces, replace=False)
         return vertices, faces[idx]
+
+
+def _face_colors(mesh: trimesh.Trimesh, v: np.ndarray, faces: np.ndarray) -> np.ndarray | None:
+    """RGB (float) per face of the decimated (v, faces): its corners' colours averaged, each
+    corner taking the colour of the nearest original vertex. None: no colours."""
+    colors = vertex_colors(mesh)
+    if colors is None:
+        return None
+    if len(v) == len(mesh.vertices):
+        per_vertex = colors
+    else:
+        _, nearest = cKDTree(mesh.vertices).query(v, workers=-1)
+        per_vertex = colors[nearest]
+    return per_vertex[faces][:, :, :3].astype(float).mean(axis=1)
 
 
 def _backdrop(size: int, xy: np.ndarray) -> Image.Image:
@@ -77,8 +93,10 @@ def render_preview(
     color: tuple[int, int, int] = (226, 214, 196),
     max_faces: int = 40000,
 ) -> Image.Image:
-    """Render a soft-shaded 3/4 view of ``mesh`` on a neutral background."""
+    """Render a soft-shaded 3/4 view of ``mesh`` on a neutral background, in the mesh's own
+    per-vertex colours when it has them, in ``color`` otherwise."""
     v, faces = _decimated(mesh, max_faces)
+    face_rgb = _face_colors(mesh, v, faces)
     if up == "y":
         v = v[:, [0, 2, 1]] * np.array([1, -1, 1])
     v = v - (v.max(0) + v.min(0)) / 2
@@ -107,7 +125,8 @@ def render_preview(
     img = _backdrop(size, xy)
 
     # Colours and corners for every face at once: the loop only hands them to PIL.
-    colours = np.clip(np.asarray(color, dtype=float)[None, :] * shade[order, None], 0, 255)
+    base = face_rgb[order] if face_rgb is not None else np.asarray(color, dtype=float)[None, :]
+    colours = np.clip(base * shade[order, None], 0, 255)
     colours = map(tuple, colours.astype(np.uint8).tolist())
     corners = xy[faces[order]].reshape(-1, 6).tolist()
     draw = ImageDraw.Draw(img)

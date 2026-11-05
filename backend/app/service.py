@@ -15,6 +15,7 @@ import trimesh
 from PIL import Image
 
 from .pipeline import PrintSettings, process_mesh
+from .pipeline.colors import vertex_colors
 from .pipeline.process import to_z_up
 from .providers import GenParams, ProviderError, get_provider
 from .render import render_preview
@@ -76,7 +77,8 @@ def finalize(
         store.save_image(model_id, render_preview(result.mesh, size=384), "thumb.png")
     except Exception:  # thumbnails are nice-to-have
         log.exception("thumbnail failed")
-    meta = {**meta, "report": result.report, "settings": settings.to_dict()}
+    meta = {**meta, "report": result.report, "settings": settings.to_dict(),
+            "has_colors": vertex_colors(result.mesh) is not None}
     return store.write_meta(model_id, meta)
 
 

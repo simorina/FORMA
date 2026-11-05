@@ -15,6 +15,12 @@ modificabile a mano nel browser.
 - **Immagine → 3D** con **Pixal3D** (predefinito) o le alternative: TRELLIS.2, Step1X-3D,
   Hunyuan3D 2.1/2mv, TRELLIS. Se lo Space del modello scelto non risponde, Forma passa da solo a
   TRELLIS.2.
+- **Colori del modello AI.** La texture di Pixal3D o TRELLIS.2 diventa un colore per vertice che
+  resta lungo tutta la preparazione (riparazione, svuotamento, base, modifica a mano) e si vede
+  nella vista 3D e nelle miniature. Per stamparlo a colori esporta in **OBJ** e trascinalo in
+  **Bambu Studio**: scegli quanti colori usare e lo slot AMS di ciascuno. Anche il GLB tiene i
+  colori; STL e 3MF restano monocolore. I modelli generati prima di questa versione non hanno
+  colori: vanno rigenerati.
 - **Ripara qualsiasi mesh**: trascina un file STL, OBJ, 3MF, GLB o PLY in un punto qualsiasi della
   finestra (o incollalo) e viene chiuso, reso manifold e preparato. Anche una foto si può
   trascinare o incollare.
@@ -25,8 +31,10 @@ modificabile a mano nel browser.
   modifica tornano com'erano.
 - **Pipeline di stampa**: rimozione dei frammenti, chiusura dei buchi, ricostruzione voxel se
   serve, normali, orientamento (in piedi livellato, **meno supporti**, disteso), scala in mm,
-  **base piana** (taglia il fondo per più presa sul piatto), svuotamento con pareti misurate dalla superficie vera, base d'appoggio, semplificazione che non
-  rompe la chiusura.
+  **base piana** (taglia il fondo per più presa sul piatto), svuotamento con pareti misurate dalla superficie vera, base d'appoggio.
+  Il modello resta **a piena risoluzione** (tutti i triangoli che dà il modello AI, fino a 2 milioni):
+  la riparazione lavora sulla mesh intera e la semplificazione, che non rompe la chiusura, scatta
+  solo oltre quella soglia.
 - **Resoconto**: grammi di filamento per PLA, PETG, ABS, ASA o TPU con il tuo riempimento,
   bobina e prezzo; metri, costo, stampe per bobina, tempo stimato per la tua stampante, copie per
   piatto, sbalzi oltre 45°, area d'appoggio sul piatto, **parti più sottili di 0,8 mm** (con
@@ -261,8 +269,9 @@ Cosa resta da verificare, e come, è in [docs/LAVORO-APERTO.md](docs/LAVORO-APER
 - **L'immagine Docker GPU** non è stata costruita (né demone Docker né GPU nell'ambiente di
   sviluppo); quella CPU ha la configurazione validata con `docker compose config`.
 - **Tempo e costo** sono stime da un profilo standard da 0,2 mm: lo slicer dà quelli esatti.
-- La scultura lavora sulla mesh preparata (fino a 150.000 triangoli di default): su mesh molto più
-  grandi i pennelli rallentano.
+- La scultura lavora sulla mesh preparata, a piena risoluzione: con circa 1 milione di triangoli
+  entrare in modifica costa mezzo secondo e ogni tocco di pennello una decina di millisecondi; i
+  file esportati sono più pesanti (STL circa 46 MB, 3MF circa 19 MB).
 
 ## Licenza
 

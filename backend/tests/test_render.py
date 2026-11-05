@@ -86,3 +86,12 @@ def test_procedural_skips_the_preview_when_an_image_is_given():
     result = ProceduralProvider().generate("un vaso", photo, GenParams(seed=1))
     assert result.image is None  # the job keeps the photo / approved draft
     assert result.mesh.is_watertight
+
+
+def test_preview_shows_vertex_colors():
+    """The history thumbnail of a coloured model shows its colours, not the default ivory."""
+    sphere = trimesh.creation.icosphere(subdivisions=4)
+    sphere.visual = trimesh.visual.ColorVisuals(
+        sphere, vertex_colors=np.tile([200, 30, 10, 255], (len(sphere.vertices), 1)))
+    r, g, b = np.asarray(render.render_preview(sphere, size=128, max_faces=500))[64, 64][:3].astype(int)
+    assert r > g + 60 and r > b + 60

@@ -78,6 +78,8 @@ export interface Model {
   model: string | null;
   kind: 'text' | 'image' | 'upload' | 'edit';
   has_image?: boolean;
+  /** Per-vertex colours from the AI model's texture: exported in OBJ and GLB. */
+  has_colors?: boolean;
   seed?: number;
   quality?: Quality;
   parent_id?: string;
@@ -129,7 +131,7 @@ export interface Draft {
 export const MESH_EXTENSIONS = ['stl', 'obj', '3mf', 'glb', 'ply', 'off'];
 
 /** Largest photo or mesh the backend accepts. */
-export const MAX_UPLOAD = 40 * 1024 * 1024;
+export const MAX_UPLOAD = 128 * 1024 * 1024;
 
 export class ApiError extends Error {
   constructor(
