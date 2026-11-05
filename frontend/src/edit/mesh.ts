@@ -42,6 +42,43 @@ export function weld(positions: Float32Array, index: Uint32Array | null, toleran
   return { positions: new Float32Array(out), index: new Uint32Array(tris), remap };
 }
 
+/** One part of a loaded file: positions, its index (null: not indexed) and RGB colours. */
+export interface Part {
+  positions: Float32Array;
+  index: Uint32Array | null;
+  colors: Float32Array | null;
+}
+
+/**
+ * The parts of a file as one indexed mesh, in typed arrays only (a 4M-triangle model would
+ * not fit in plain number arrays). Colours, when any part has them, with `fill` (RGB alike)
+ * for the vertices of the parts without; null when no part has colours.
+ */
+export function mergeParts(parts: Part[], fill: number): Part & { index: Uint32Array } {
+  let vertices = 0, corners = 0;
+  for (const p of parts) {
+    vertices += p.positions.length / 3;
+    corners += p.index ? p.index.length : p.positions.length / 3;
+  }
+  const positions = new Float32Array(vertices * 3);
+  const index = new Uint32Array(corners);
+  const colored = parts.some((p) => p.colors);
+  const colors = colored ? new Float32Array(vertices * 3) : null;
+  let v = 0, c = 0;
+  for (const p of parts) {
+    const count = p.positions.length / 3;
+    positions.set(p.positions, v * 3);
+    if (colors) {
+      if (p.colors) colors.set(p.colors, v * 3);
+      else colors.fill(fill, v * 3, (v + count) * 3);
+    }
+    if (p.index) for (let i = 0; i < p.index.length; i++) index[c++] = p.index[i] + v;
+    else for (let i = 0; i < count; i++) index[c++] = v + i;
+    v += count;
+  }
+  return { positions, index, colors };
+}
+
 /**
  * A per-vertex attribute (the model's colours) moved onto the welded vertices: each welded
  * vertex takes the value of the last original vertex merged into it.

@@ -32,7 +32,8 @@ modificabile a mano nel browser.
 - **Pipeline di stampa**: rimozione dei frammenti, chiusura dei buchi, ricostruzione voxel se
   serve, normali, orientamento (in piedi livellato, **meno supporti**, disteso), scala in mm,
   **base piana** (taglia il fondo per più presa sul piatto), svuotamento con pareti misurate dalla superficie vera, base d'appoggio.
-  Il modello resta **a piena risoluzione** (tutti i triangoli che dà il modello AI, fino a 2 milioni):
+  Il modello resta **a piena risoluzione** (tutti i triangoli che dà il modello AI, fino a 5 milioni;
+  Pixal3D in qualità Alta ne chiede 4 milioni, con la texture dei colori a 4096 px):
   la riparazione lavora sulla mesh intera e la semplificazione, che non rompe la chiusura, scatta
   solo oltre quella soglia.
 - **Resoconto**: grammi di filamento per PLA, PETG, ABS, ASA o TPU con il tuo riempimento,
@@ -269,9 +270,11 @@ Cosa resta da verificare, e come, è in [docs/LAVORO-APERTO.md](docs/LAVORO-APER
 - **L'immagine Docker GPU** non è stata costruita (né demone Docker né GPU nell'ambiente di
   sviluppo); quella CPU ha la configurazione validata con `docker compose config`.
 - **Tempo e costo** sono stime da un profilo standard da 0,2 mm: lo slicer dà quelli esatti.
-- La scultura lavora sulla mesh preparata, a piena risoluzione: con circa 1 milione di triangoli
-  entrare in modifica costa mezzo secondo e ogni tocco di pennello una decina di millisecondi; i
-  file esportati sono più pesanti (STL circa 46 MB, 3MF circa 19 MB).
+- Tutto lavora a piena risoluzione, e con ~4 milioni di triangoli (Pixal3D in qualità Alta) costa:
+  preparazione 30–50 s (anche "Applica"), caricamento nella vista ~2 s più il GLB da ~70 MB, entrata
+  in modifica ~1,5 s; file esportati da STL ~180 MB, 3MF ~70 MB, OBJ a colori ~380 MB. Pixal3D
+  calcola la forma su una griglia di 1536³: oltre il milione di triangoli le superfici sono più
+  fini, ma non compaiono dettagli nuovi. Le modifiche a mano tornano come STL: upload fino a 256 MB.
 
 ## Licenza
 

@@ -119,7 +119,7 @@ export function mountLeftPanel(root: HTMLElement, app: App): { focusPrompt(): vo
   // dropping a file here, or anywhere in the window, goes through the overlay in main.ts
   const photo = h('div', { class: 'photo' });
   const photoLimits = h('p', { id: 'photo-limits', class: 'meta' },
-    'Foto PNG, JPG o WEBP: un oggetto solo, su sfondo semplice. Mesh STL, OBJ, 3MF, GLB o PLY: la riparo e la preparo per la stampa. Fino a 128 MB.');
+    'Foto PNG, JPG o WEBP: un oggetto solo, su sfondo semplice. Mesh STL, OBJ, 3MF, GLB o PLY: la riparo e la preparo per la stampa. Fino a 256 MB.');
 
   // -- model -----------------------------------------------------------------------------
   const providerSeg = h('div', { class: 'segmented', role: 'radiogroup', 'aria-label': 'Dove generare' });

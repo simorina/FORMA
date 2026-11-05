@@ -21,7 +21,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { CSS2DRenderer } from 'three/addons/renderers/CSS2DRenderer.js';
 import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from 'three-mesh-bvh';
-import { computeNormals, weld, weldAttribute } from '../edit/mesh';
+import { computeNormals, mergeParts, weld, weldAttribute } from '../edit/mesh';
 import { Sculpt, type SculptState } from '../edit/sculpt';
 import { writeSTL } from '../edit/stl';
 import type { Printer } from '../lib/printers';
@@ -535,26 +535,34 @@ export class Viewer {
       if (m.isMesh) parts.push(m.geometry.clone().applyMatrix4(m.matrixWorld));
     });
     if (!parts.length) throw new Error('Il file non contiene una mesh');
-    const colored = parts.some((g) => g.hasAttribute('color'));
-    const flat: number[] = [];
-    const flatColors: number[] = [];
-    for (const g of parts) {
+    // typed arrays all the way: a full-resolution model has millions of triangles
+    const merged = mergeParts(parts.map((g) => {
       const pos = g.getAttribute('position');
-      const col = colored ? g.getAttribute('color') as THREE.BufferAttribute | undefined : undefined;
-      const idx = g.getIndex();
-      const count = idx ? idx.count : pos.count;
-      for (let i = 0; i < count; i++) {
-        const v = idx ? idx.getX(i) : i;
-        flat.push(pos.getX(v), pos.getY(v), pos.getZ(v));
-        // the backend writes sRGB bytes (as trimesh reads them); the shader works in linear
-        if (col) flatColors.push(srgbToLinear(col.getX(v)), srgbToLinear(col.getY(v)), srgbToLinear(col.getZ(v)));
-        else if (colored) flatColors.push(NEUTRAL_LINEAR, NEUTRAL_LINEAR, NEUTRAL_LINEAR);
+      const positions = new Float32Array(pos.count * 3);
+      for (let v = 0; v < pos.count; v++) {
+        positions[3 * v] = pos.getX(v);
+        positions[3 * v + 1] = pos.getY(v);
+        positions[3 * v + 2] = pos.getZ(v);
       }
+      const col = g.getAttribute('color') as THREE.BufferAttribute | undefined;
+      let colors: Float32Array | null = null;
+      if (col) {
+        // the backend writes sRGB bytes (as trimesh reads them); the shader works in linear
+        colors = new Float32Array(col.count * 3);
+        for (let v = 0; v < col.count; v++) {
+          colors[3 * v] = srgbToLinear(col.getX(v));
+          colors[3 * v + 1] = srgbToLinear(col.getY(v));
+          colors[3 * v + 2] = srgbToLinear(col.getZ(v));
+        }
+      }
+      const idx = g.getIndex();
+      const index = idx ? Uint32Array.from(idx.array as ArrayLike<number>) : null;
       g.dispose();
-    }
-    const welded = weld(new Float32Array(flat), null);
-    const colors = colored
-      ? weldAttribute(new Float32Array(flatColors), welded.remap, 3, welded.positions.length / 3)
+      return { positions, index, colors };
+    }), NEUTRAL_LINEAR);
+    const welded = weld(merged.positions, merged.index);
+    const colors = merged.colors
+      ? weldAttribute(merged.colors, welded.remap, 3, welded.positions.length / 3)
       : null;
     this.setGeometry(welded.positions, welded.index, colors);
     const size = this.size()!;

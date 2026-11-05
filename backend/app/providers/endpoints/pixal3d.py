@@ -26,7 +26,10 @@ from .common import IMAGE_EXTS, MESH_EXTS, ShapeEndpoint, StatusPoll, call, extr
 from .trellis import _handle
 
 RESOLUTION = {"draft": 1024, "standard": 1536, "high": 1536}
-DECIMATION = {"draft": 200_000, "standard": 500_000, "high": 1_000_000}
+# Triangles asked of extract_glb (the Space remeshes at its 1536³ grid, then simplifies to
+# this) and the colour texture's size: "high" is the most Forma keeps (see process.py).
+DECIMATION = {"draft": 200_000, "standard": 500_000, "high": 4_000_000}
+TEXTURE = {"draft": 1024, "standard": 1024, "high": 4096}
 
 # Upstream stage names (tqdm descriptions) -> Italian.
 _STAGES = (
@@ -111,7 +114,8 @@ class Pixal3DEndpoint(ShapeEndpoint):
             raise RuntimeError("Pixal3D non ha restituito lo stato della forma")
         glb = call(client, "/extract_glb_api", progress, "shape", "Estrazione mesh", timeout_s,
                    (0.78, 1.0), poll=poll, state_path=state_path,
-                   decimation_target=DECIMATION.get(quality, 500_000), texture_size=1024,
+                   decimation_target=DECIMATION.get(quality, 500_000),
+                   texture_size=TEXTURE.get(quality, 1024),
                    session_id=session_id)
         path = extract_path(glb, MESH_EXTS)
         if not path:

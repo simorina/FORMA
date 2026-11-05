@@ -31,9 +31,9 @@ from .service import JobManager, finalize, public_model
 from .storage import DraftStore, ModelStore
 
 log = logging.getLogger("forma")
-# A model kept at full resolution (up to 2M triangles) comes back from the editor as a
-# binary STL of up to ~95 MB.
-MAX_UPLOAD = 128 * 1024 * 1024
+# A model kept at full resolution (up to 5M triangles, see pipeline.process.MAX_FACES)
+# comes back from the editor as a binary STL of up to ~240 MB.
+MAX_UPLOAD = 256 * 1024 * 1024
 MESH_TYPES = {"stl", "obj", "ply", "glb", "gltf", "off", "3mf"}
 
 # Cache-Control for files whose name changes with their content (the frontend's build output).
@@ -93,7 +93,7 @@ def _print_settings(raw: str | None) -> PrintSettings:
 async def _read_upload(upload: UploadFile) -> bytes:
     data = await upload.read(MAX_UPLOAD + 1)
     if len(data) > MAX_UPLOAD:
-        raise HTTPException(413, "File troppo grande (max 128 MB)")
+        raise HTTPException(413, "File troppo grande (max 256 MB)")
     if not data:
         raise HTTPException(422, "File vuoto")
     return data

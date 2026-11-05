@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bounds, computeNormals, updateNormals, vertexFaces, vertexNeighbors, weld, weldAttribute } from './mesh';
+import { bounds, computeNormals, mergeParts, updateNormals, vertexFaces, vertexNeighbors, weld, weldAttribute } from './mesh';
 import { grid, splitCube, volume } from './fixtures';
 
 describe('weld', () => {
@@ -35,6 +35,26 @@ describe('weld', () => {
     for (let v = 0; v < 8; v++) {
       for (let k = 0; k < 3; k++) expect(welded[3 * v + k]).toBe((w.positions[3 * v + k] + 1) / 2);
     }
+  });
+
+  it('merges the parts of a file into one indexed mesh, colours filled where a part has none', () => {
+    const cube = splitCube();
+    const cubeColors = cube.positions.map((p) => (p + 1) / 2);
+    const tri = Float32Array.from([5, 0, 0, 6, 0, 0, 5, 1, 0]); // not indexed
+    const m = mergeParts([
+      { positions: cube.positions, index: cube.index, colors: cubeColors },
+      { positions: tri, index: null, colors: null },
+    ], 0.25);
+    expect(Array.from(m.positions)).toEqual([...cube.positions, ...tri]);
+    expect(Array.from(m.index)).toEqual([...cube.index, 24, 25, 26]);
+    expect(Array.from(m.colors!)).toEqual([...cubeColors, ...new Array(9).fill(0.25)]);
+  });
+
+  it('merges parts without colours into a mesh without colours', () => {
+    const cube = splitCube();
+    const m = mergeParts([{ positions: cube.positions, index: cube.index, colors: null }], 0.25);
+    expect(m.colors).toBeNull();
+    expect(m.index.length).toBe(36);
   });
 
   it('accepts non-indexed geometry', () => {

@@ -31,9 +31,11 @@ StepFn = Callable[[str, float], None]
 
 ORIENTATIONS = ("upright", "supports", "flat", "keep")
 
-# Meshes above this many triangles are simplified before the repair (see process_mesh).
-PRE_DECIMATE_ABOVE = 2_000_000
-PRE_DECIMATE_TO = 1_000_000
+# The most triangles a print keeps: Pixal3D at its highest quality gives up to 4M, with some
+# margin. Larger meshes (scans) are simplified before the repair (see process_mesh).
+MAX_FACES = 5_000_000
+PRE_DECIMATE_ABOVE = MAX_FACES
+PRE_DECIMATE_TO = 4_000_000
 
 
 @dataclass
@@ -51,8 +53,8 @@ class PrintSettings:
     base_thickness_mm: float = 2.0
     base_margin_mm: float = 3.0
     decimate: bool = True
-    # The AI models give up to ~1M triangles: keep them all (simplification only above this).
-    target_faces: int = 2_000_000
+    # The AI models give up to 4M triangles: keep them all (simplification only above this).
+    target_faces: int = MAX_FACES
     remove_debris: bool = True
     # Voxel rebuild, last resort of the repair: 384³ is ~0.3 mm on a 120 mm print.
     repair_resolution: int = 384
@@ -89,7 +91,7 @@ class PrintSettings:
         s.wall_mm = float(np.clip(s.wall_mm, 0.8, 20.0))
         s.base_thickness_mm = float(np.clip(s.base_thickness_mm, 0.6, 20.0))
         s.base_margin_mm = float(np.clip(s.base_margin_mm, 0.0, 50.0))
-        s.target_faces = int(np.clip(s.target_faces, 2_000, 2_000_000))
+        s.target_faces = int(np.clip(s.target_faces, 2_000, MAX_FACES))
         s.repair_resolution = int(np.clip(s.repair_resolution, 64, 384))
         if s.orientation not in ORIENTATIONS:
             s.orientation = "upright"

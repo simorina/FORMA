@@ -131,7 +131,7 @@ export interface Draft {
 export const MESH_EXTENSIONS = ['stl', 'obj', '3mf', 'glb', 'ply', 'off'];
 
 /** Largest photo or mesh the backend accepts. */
-export const MAX_UPLOAD = 128 * 1024 * 1024;
+export const MAX_UPLOAD = 256 * 1024 * 1024;
 
 export class ApiError extends Error {
   constructor(
