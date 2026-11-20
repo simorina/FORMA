@@ -11,6 +11,7 @@ import { icon, seal } from './lib/icons';
 import { DUR, EASE, ghostOut, play } from './lib/motion';
 import { fitOnBed } from './lib/printers';
 import { mountLeftPanel } from './ui/create';
+import { mountDownloads } from './ui/download';
 import { mountRightPanel } from './ui/print';
 import { mountShortcuts } from './ui/shortcuts';
 import { mountStage } from './ui/stage';
@@ -73,6 +74,7 @@ const leftApi = mountLeftPanel(left, app);
 mountRightPanel(right, app);
 mountStage(viewport, app);
 mountShortcuts(document.body, app, leftApi.focusPrompt);
+mountDownloads(document.body, app);
 mountTour(document.body, app);
 
 // -- a photo or a mesh dropped anywhere in the window, or pasted ------------------------------

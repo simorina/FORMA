@@ -11,7 +11,8 @@ from typing import Any
 import trimesh
 from PIL import Image
 
-from ..pipeline.colors import colored_mesh, concatenate
+from ..pipeline.colors import concatenate
+from ..pipeline.texture import bake_all
 
 # Prompt template used for every text->image step: we want a single, solid,
 # well-lit object that image->3D models can lift into clean printable geometry.
@@ -145,16 +146,17 @@ class Provider(ABC):
 
 def as_single_mesh(obj: Any) -> trimesh.Trimesh:
     """Flatten a trimesh Scene / list into one Trimesh, keeping per-vertex colours (from a
-    texture, a material or vertex/face colours; see ``pipeline.colors``) and nothing else."""
+    texture, a material or vertex/face colours; see ``pipeline.colors``) and nothing else.
+    A texture is read at its own resolution: the mesh is split first (``pipeline.texture``)."""
     if isinstance(obj, trimesh.Trimesh):
-        return colored_mesh(obj)
+        return concatenate(bake_all([obj]))
     if isinstance(obj, trimesh.Scene):
         meshes = [g for g in obj.dump() if isinstance(g, trimesh.Trimesh)] if hasattr(
             obj, "dump"
         ) else []
         if not meshes:
             raise ProviderError("Il file 3D ricevuto non contiene geometria.")
-        return concatenate(meshes)
+        return concatenate(bake_all(meshes))
     if isinstance(obj, (list, tuple)):
         return concatenate([as_single_mesh(o) for o in obj])
     raise ProviderError(f"Formato mesh non supportato: {type(obj).__name__}")

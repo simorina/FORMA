@@ -20,7 +20,9 @@ def test_health(client):
 def test_providers_list(client):
     data = client.get("/api/providers").json()
     names = {p["name"] for p in data["providers"]}
-    assert names == {"hf_remote", "local", "procedural"}
+    assert names == {"hf_remote", "local", "meshy", "procedural"}
+    meshy = next(p for p in data["providers"] if p["name"] == "meshy")
+    assert meshy["available"] is False and "MESHY_API_KEY" in meshy["reason"]  # no key in the tests
     hf = next(p for p in data["providers"] if p["name"] == "hf_remote")
     keys = [m["key"] for m in hf["models"]]
     assert keys[:2] == ["pixal3d", "trellis2"]
@@ -32,7 +34,17 @@ def test_providers_list(client):
     assert data["default"] == "procedural"
     assert data["hf_token"] is False
     local = next(p for p in data["providers"] if p["name"] == "local")
-    assert local["available"] is False  # no CUDA in CI
+    assert local["available"] is _cuda()  # False in CI, True with `make install-idol` on a GPU
+    assert next(m for m in local["models"] if m["default"])["key"] == "idol"
+    assert local["models"][0]["license"] == "Apache-2.0"
+
+
+def _cuda() -> bool:
+    try:
+        import torch
+    except ImportError:
+        return False
+    return bool(torch.cuda.is_available())
 
 
 def test_generate_text_procedural_full_flow(client):
@@ -211,7 +223,24 @@ class FakeJob:
         pass
 
 
+class RendersJob(FakeJob):
+    """Pixal3D's /generate_3d also returns preview renders the Space refuses to serve:
+    a client that downloads output files gets a 403, like the real gradio_client."""
+
+    def __init__(self, value, client):
+        super().__init__(value)
+        self.client = client
+
+    def result(self):
+        if self.client.download_files:
+            raise RuntimeError("Client error '403 Forbidden' for url "
+                               "'https://x.hf.space/gradio_api/file=/home/user/app/tmp/render_normal_0.jpg'")
+        return self.value
+
+
 class FakeClient:
+    download_files = "gradio-tmp"  # like gradio_client.Client: output files are downloaded
+
     def __init__(self, space, tmp_path, calls):
         self.space = space
         self.tmp = tmp_path
@@ -232,16 +261,26 @@ class FakeClient:
             Image.new("RGB", (256, 256), (200, 190, 180)).save(p)
             return FakeJob((str(p), 0))
         if api_name in ("/preprocess_image", "/preprocess"):
+            arg = "input" if self.space == "microsoft/TRELLIS.2" else "image"  # live Space names
+            if arg not in kwargs:
+                raise ValueError(f"Parameter `{next(iter(kwargs))}` is not a valid key-word argument.")
             p = self.tmp / "pre.png"
             Image.new("RGBA", (256, 256)).save(p)
             return FakeJob(str(p))
         if api_name == "/image_to_3d":
             return FakeJob(({"state": 1}, "<html>"))
         if api_name == "/generate_3d":  # Pixal3D: state lives in a file on the Space
-            return FakeJob({"render_paths": {}, "state_path": "/tmp/state_1.npz",
-                            "camera_angle_x": 0.7, "distance": 2.0})
+            render = {"path": "/home/user/app/tmp/render_normal_0.jpg",
+                      "meta": {"_type": "gradio.FileData"}}
+            return RendersJob({"render_paths": {"normal": [render]},
+                               "state_path": "/tmp/state_1.npz",
+                               "camera_angle_x": 0.7, "distance": 2.0}, self)
         if api_name == "/extract_glb_api":
+            assert self.download_files, "the GLB must be downloaded"
             return FakeJob(self._glb())
+        if api_name == "/generate_func":  # Step1X: (geometry GLB, textured GLB)
+            p = self._glb()
+            return FakeJob((p, p))
         if api_name in ("/extract_glb", "/shape_generation"):
             p = self._glb()
             return FakeJob(({"path": p}, p) if api_name == "/extract_glb" else (

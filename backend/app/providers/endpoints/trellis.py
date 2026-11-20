@@ -1,6 +1,6 @@
 """microsoft/TRELLIS.2 and TRELLIS (v1) Spaces.
 
-TRELLIS.2 app.py (upstream): preprocess_image(image) -> image;
+TRELLIS.2 app.py (upstream, checked 2026-11): preprocess_image(input) -> image;
 image_to_3d(image, seed, resolution, ss_*, shape_slat_*, tex_slat_*) -> (state, html);
 extract_glb(state, decimation_target, texture_size) -> (glb, glb).
 The state lives server-side in the gradio session, so the same Client must be
@@ -14,6 +14,10 @@ from typing import Any
 from .common import IMAGE_EXTS, MESH_EXTS, ShapeEndpoint, call, extract_path
 
 RESOLUTION = {"draft": "512", "standard": "1024", "high": "1536"}
+# Triangles asked of extract_glb, whatever the quality: the most the Space's "Decimation
+# Target" slider allows (100k-500k, app.py checked 2026-11). The preparation then refines
+# the mesh to the 5M every print has (pipeline/refine.py).
+TRIANGLES = 500_000
 
 
 def _handle(path: str) -> Any:
@@ -35,7 +39,7 @@ class Trellis2Endpoint(ShapeEndpoint):
 
     def run(self, client, image_path, seed, quality, progress, timeout_s):
         pre = call(client, "/preprocess_image", progress, "shape", "Scontorno immagine",
-                   timeout_s, (0.0, 0.08), image=_handle(image_path))
+                   timeout_s, (0.0, 0.08), input=_handle(image_path))
         pre_path = extract_path(pre, IMAGE_EXTS) or image_path
         call(client, "/image_to_3d", progress, "shape", "TRELLIS.2 genera la forma", timeout_s,
              (0.08, 0.8),
@@ -47,8 +51,7 @@ class Trellis2Endpoint(ShapeEndpoint):
              tex_slat_guidance_strength=1.0, tex_slat_guidance_rescale=0.0,
              tex_slat_sampling_steps=12, tex_slat_rescale_t=3.0)
         glb = call(client, "/extract_glb", progress, "shape", "Estrazione mesh", timeout_s,
-                   (0.8, 1.0), decimation_target=500000 if quality != "draft" else 200000,
-                   texture_size=1024)
+                   (0.8, 1.0), decimation_target=TRIANGLES, texture_size=1024)
         path = extract_path(glb, MESH_EXTS)
         if not path:
             raise RuntimeError("TRELLIS.2 non ha restituito un file GLB")

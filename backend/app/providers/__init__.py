@@ -6,6 +6,7 @@ from ..config import get_settings
 from .base import GenerationResult, GenParams, Provider, ProviderError
 from .hf_remote import HFRemoteProvider
 from .local import LocalProvider
+from .meshy import MeshyProvider
 from .procedural import ProceduralProvider
 
 _REGISTRY: dict[str, Provider] = {}
@@ -18,10 +19,12 @@ def _build(name: str) -> Provider:
         return LocalProvider()
     if name == "procedural":
         return ProceduralProvider()
+    if name == "meshy":
+        return MeshyProvider()
     raise ProviderError(f"Provider sconosciuto: {name}")
 
 
-PROVIDER_NAMES = ("hf_remote", "local", "procedural")
+PROVIDER_NAMES = ("hf_remote", "local", "meshy", "procedural")
 
 
 def get_provider(name: str | None = None) -> Provider:

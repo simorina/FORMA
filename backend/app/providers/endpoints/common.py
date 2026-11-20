@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from ..base import ModelInfo, ProgressFn, ProviderError
@@ -38,6 +39,18 @@ def extract_path(result: Any, exts: tuple[str, ...] = ()) -> str | None:
 
 MESH_EXTS = (".glb", ".gltf", ".obj", ".ply", ".stl", ".off")
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp")
+
+
+@contextmanager
+def no_downloads(client: Any) -> Iterator[None]:
+    """Leave output files on the Space for the calls inside: gradio_client downloads every
+    file in a result unless ``download_files`` is False, and fails if one is refused."""
+    saved = getattr(client, "download_files", None)
+    client.download_files = False
+    try:
+        yield
+    finally:
+        client.download_files = saved
 
 
 def friendly_error(exc: Exception, space: str) -> ProviderError:
@@ -112,6 +125,8 @@ def call(
                 idx, length = getattr(last, "index", None), getattr(last, "length", None)
                 if idx is not None and length:
                     frac = float(idx) / float(length)
+                elif isinstance(getattr(last, "progress", None), (int, float)):
+                    frac = float(last.progress)  # gr.Progress(fraction, desc=...)
                 desc = getattr(last, "desc", None)
                 if desc:
                     message = f"{label} · {desc}"

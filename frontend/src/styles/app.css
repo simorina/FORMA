@@ -489,6 +489,42 @@ kbd {
 .photo-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: italic 400 15px/20px var(--serif); }
 #photo-limits { margin-top: 10px; }
 
+/* Text or picture: the picture box takes the prompt's place, as large, on the same paper. */
+.source-seg { margin-bottom: 12px; }
+.source-seg .seg { flex: 1; }
+/* minmax(0, 1fr): the picture (1024 px wide as a file) must not widen the column past the panel */
+.image-field { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.image-box {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+  min-height: 112px; padding: 22px 16px; text-align: center;
+  background: var(--paper-hi); border: 1px dashed var(--rule-strong); color: var(--muted); cursor: pointer;
+  transition: border-color var(--dur-short) ease, color var(--dur-short) ease;
+}
+.is-first-run .image-box { min-height: 140px; }
+.image-box:hover { border-color: var(--ink); color: var(--ink); }
+.image-box:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
+.image-box > .icon { width: 26px; height: 26px; transition: translate var(--dur-base) var(--ease-out); }
+@media (hover: hover) { .image-box:hover > .icon { translate: 0 -2px; } }
+.image-box-text { display: grid; gap: 4px; }
+.image-box-title { font: italic 400 19px/26px var(--serif); color: var(--ink); }
+.image-box.has-image { padding: 10px; border-style: solid; }
+.image-preview { display: block; width: 100%; height: 220px; object-fit: contain; }
+.image-chip .photo-chip { gap: 8px; padding: 4px 4px 4px 12px; }
+.image-change { height: 32px; padding: 0 10px; }
+.kind-row { margin-top: 2px; }
+.kind-row .seg { padding-inline: 12px; }
+#image-limits { margin: 0; }
+/* the relief's choices: one row each, label left, control right */
+.relief-fields { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; margin-top: 2px; }
+.relief-fields .relief-row { margin-top: 0; }
+.relief-stack { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
+.relief-stack .segmented { width: 100%; }
+.relief-stack .seg { flex: 1; min-width: 0; padding-inline: 6px; }
+.relief-fields .num-input { width: 84px; }
+.relief-note { margin: 2px 0 0; }
+.image-route-card[aria-current='true'], .image-route-card[aria-current='true']:hover { background: var(--paper-hi); border-left-color: var(--ink); cursor: default; }
+.image-route-card[aria-current='true']::before { display: none; }
+
 .provider-note { margin: 10px 0 0; }
 .models { display: grid; margin-top: 14px; border-top: 1px solid var(--rule); }
 .model {
@@ -518,6 +554,8 @@ kbd {
 .model-note { font-size: 12px; line-height: 17px; color: var(--faint); }
 .model-note.is-warning { color: var(--negative); }
 .field-inline { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 18px; }
+/* from a picture: the models allowed for pictures, as the model list draws its rows */
+.image-route { display: grid; margin-top: 14px; border-top: 1px solid var(--rule); }
 .field-inline .label { margin: 0; }
 .field-inline .segmented { flex: none; }
 .field-inline .seg { padding: 0 12px; }
@@ -637,6 +675,7 @@ kbd {
 .formats .is-recommended { background: var(--ink); color: var(--paper-hi); }
 .formats .is-recommended:hover { background: var(--ink-2); border-color: var(--ink-2); }
 .file-name { display: grid; gap: 3px; margin-top: 12px; overflow-wrap: anywhere; }
+.blender-open { width: 100%; height: 42px; margin-top: 12px; }
 .file-slug { color: var(--ink-2); font: italic 400 14px/20px var(--serif); }
 
 /* -- right panel: sculpt tools ------------------------------------------------------------ */
@@ -794,6 +833,7 @@ kbd {
 .draft-quote { font: italic 400 15px/21px var(--serif); color: var(--ink-2); }
 .draft-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .review-row { margin-top: 8px; padding-bottom: 0; }
+.meshy-note { margin: 10px 0 0; }
 
 /* -- drop anywhere ------------------------------------------------------------------------------ */
 .drop-overlay {
@@ -843,6 +883,28 @@ kbd {
 .shortcut { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 9px 0; border-top: 1px solid var(--rule); }
 .shortcut dt { display: flex; gap: 4px; order: 2; }
 .shortcut dd { margin: 0; color: var(--muted); }
+/* The download popup: steps, one figure, one bar, until the last byte is saved. */
+.download-dialog { width: min(460px, 100%); }
+.download-dialog .kicker { margin-bottom: 6px; }
+.download-name { margin: 0 0 18px; font: 400 24px/30px var(--serif); overflow-wrap: anywhere; }
+.download-steps { display: flex; gap: 18px; margin: 0 0 18px; padding: 0; list-style: none; }
+.download-step { display: flex; align-items: center; gap: 8px; font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--faint); transition: color var(--dur-short) ease; }
+.download-step.is-current, .download-step.is-done { color: var(--ink); }
+.download-step-mark { display: grid; place-items: center; width: 16px; height: 16px; border: 1px solid currentColor; border-radius: 50%; }
+.download-step.is-current .download-step-mark { background: var(--ink); box-shadow: inset 0 0 0 3px var(--paper-hi); }
+.download-step.is-done .download-step-mark { background: var(--ink); color: var(--paper-hi); }
+.download-figure { display: flex; align-items: baseline; gap: 4px; }
+.download-pct { font: 400 56px/1 var(--serif); letter-spacing: -0.02em; }
+.download-pct-unit { font: 400 22px/1 var(--serif); color: var(--muted); }
+.download-bar { position: relative; height: 4px; margin: 14px 0 12px; background: var(--rule); overflow: hidden; }
+.download-bar .bar-fill { position: absolute; inset: 0 auto 0 0; width: 0; background: var(--ink); transition: width 0.25s linear; }
+.download-dialog.is-error .download-bar .bar-fill { background: var(--negative); }
+.download-status { margin: 0; font-size: 15px; line-height: 22px; color: var(--ink); }
+.download-dialog.is-error .download-status { color: var(--negative); }
+.download-detail { min-height: 20px; margin: 2px 0 0; }
+.download-note { margin: 0; max-width: 30ch; }
+.download-actions { display: flex; gap: 8px; flex: none; }
+@media (prefers-reduced-motion: reduce) { .download-bar .bar-fill, .download-step { transition: none; } }
 .dialog-foot { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 8px; padding-top: 16px; border-top: 1px solid var(--rule-strong); }
 
 /* -- phone tab bar ---------------------------------------------------------------------------- */

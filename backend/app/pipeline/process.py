@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
@@ -15,6 +16,7 @@ from scipy import ndimage
 
 from .colors import carry
 from .fmt import it_num
+from .refine import refine
 from .repair import (
     DECIMATION_LOCK,
     fill_surface,
@@ -31,11 +33,27 @@ StepFn = Callable[[str, float], None]
 
 ORIENTATIONS = ("upright", "supports", "flat", "keep")
 
-# The most triangles a print keeps: Pixal3D at its highest quality gives up to 4M, with some
-# margin. Larger meshes (scans) are simplified before the repair (see process_mesh).
-MAX_FACES = 5_000_000
+# The most triangles a print keeps: the detail a model computed is never thrown away below
+# this (Meshy Ultra 4K gives up to ~10M), and Pixal3D and Step1X are asked for this many.
+# Larger meshes (scans, or a model overshooting by a few) are simplified to it before the
+# repair (see process_mesh).
+MAX_FACES = 10_000_000
 PRE_DECIMATE_ABOVE = MAX_FACES
-PRE_DECIMATE_TO = 4_000_000
+PRE_DECIMATE_TO = MAX_FACES
+# The fewest triangles a print has: every model reaches the plate (and Bambu Studio) with at
+# least this many (and keeps up to MAX_FACES of its own). A mesh with fewer (TRELLIS.2 stops at 500k, the voxel rebuild, a simple
+# upload) is refined at the end, its surface unchanged (see refine.py).
+MIN_FACES = 5_000_000
+
+
+def min_faces() -> int:
+    """MIN_FACES, unless FORMA_MIN_FACES lowers it: for the tests and the e2e flows only, whose
+    browser draws in software and would crawl through 5M triangles per model."""
+    raw = os.environ.get("FORMA_MIN_FACES", "").strip()
+    try:
+        return int(np.clip(int(raw), 0, MIN_FACES)) if raw else MIN_FACES
+    except ValueError:
+        return MIN_FACES
 
 
 @dataclass
@@ -53,7 +71,7 @@ class PrintSettings:
     base_thickness_mm: float = 2.0
     base_margin_mm: float = 3.0
     decimate: bool = True
-    # The AI models give up to 4M triangles: keep them all (simplification only above this).
+    # Simplification only above this: never below the minimum every print keeps (min_faces).
     target_faces: int = MAX_FACES
     remove_debris: bool = True
     # Voxel rebuild, last resort of the repair: 384³ is ~0.3 mm on a 120 mm print.
@@ -91,7 +109,8 @@ class PrintSettings:
         s.wall_mm = float(np.clip(s.wall_mm, 0.8, 20.0))
         s.base_thickness_mm = float(np.clip(s.base_thickness_mm, 0.6, 20.0))
         s.base_margin_mm = float(np.clip(s.base_margin_mm, 0.0, 50.0))
-        s.target_faces = int(np.clip(s.target_faces, 2_000, MAX_FACES))
+        # Simplifying below the minimum would only lose detail the refinement cannot give back.
+        s.target_faces = int(np.clip(s.target_faces, max(2_000, min_faces()), MAX_FACES))
         s.repair_resolution = int(np.clip(s.repair_resolution, 64, 384))
         if s.orientation not in ORIENTATIONS:
             s.orientation = "upright"
@@ -429,6 +448,16 @@ def process_mesh(
         if candidate.is_watertight or not work.is_watertight:
             work = carry(work, candidate)
             steps.append(f"semplificato {before:,} → {len(work.faces):,} triangoli".replace(",", "."))
+
+    # Last, after every step that rebuilds the surface (repair, cut, hollow, base, the
+    # simplification above): whatever came out, the print has at least the minimum.
+    floor = min_faces()
+    if len(work.faces) < floor:
+        notify("Risoluzione", 0.86)
+        before = len(work.faces)
+        work = refine(work, floor)
+        counts = f"{before:,} → {len(work.faces):,}".replace(",", ".")
+        steps.append(f"suddiviso {counts} triangoli, forma invariata")
 
     notify("Verifica", 0.92)
     work = place_on_bed(work)

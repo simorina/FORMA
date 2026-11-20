@@ -94,7 +94,9 @@ def printability_report(mesh: trimesh.Trimesh, extra: dict[str, Any] | None = No
         )
     if extents.size and extents.min() < 1.0:
         warnings.append("Una dimensione è sotto 1 mm: il pezzo potrebbe non stamparsi.")
-    thin_frac, thin_mm = thin_parts(mesh) if len(mesh.faces) < 1_000_000 else (0.0, None)
+    # Every print has at least 5M triangles (process.MIN_FACES): both checks below run at any
+    # size (~1.5 s and ~3 s at 5M; thin_parts samples the surface, count_bodies walks it).
+    thin_frac, thin_mm = thin_parts(mesh)
     if thin_frac > 0.001 and thin_mm is not None:
         scale = MIN_WALL_MM / max(thin_mm, 0.05)
         warnings.append(
@@ -124,7 +126,7 @@ def printability_report(mesh: trimesh.Trimesh, extra: dict[str, Any] | None = No
         "thin_mm": round(thin_mm, 2) if thin_mm is not None else None,
         "bed_contact_cm2": round(contact, 2),
         # Separate pieces on the bed; the cavity of a hollowed model is not a piece.
-        "components": count_bodies(mesh) if len(mesh.faces) < 1_000_000 else 1,
+        "components": count_bodies(mesh),
         "warnings": warnings,
     }
     if extra:

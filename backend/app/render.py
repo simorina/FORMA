@@ -24,12 +24,36 @@ def _rotation(yaw: float, pitch: float) -> np.ndarray:
     return rx @ rz
 
 
+def _clustered(vertices: np.ndarray, faces: np.ndarray, cells: int) -> tuple[np.ndarray, np.ndarray]:
+    """Vertex clustering: one vertex per cell of a grid with ``cells`` along the longest side
+    (the mean of those in it), triangles that collapse dropped. Linear in the mesh size."""
+    lo = vertices.min(axis=0)
+    size = float((vertices.max(axis=0) - lo).max()) / cells or 1.0
+    cell = np.minimum(((vertices - lo) / size).astype(np.int64), cells - 1)
+    _, group = np.unique((cell[:, 0] * cells + cell[:, 1]) * cells + cell[:, 2], return_inverse=True)
+    count = np.bincount(group)
+    merged = np.stack([np.bincount(group, weights=vertices[:, i]) for i in range(3)], axis=1)
+    f = group[faces]
+    kept = (f[:, 0] != f[:, 1]) & (f[:, 1] != f[:, 2]) & (f[:, 2] != f[:, 0])
+    return merged / count[:, None], f[kept]
+
+
+# Above this many triangles, a thumbnail first clusters the vertices on a grid of PREVIEW_CELLS
+# (finer than its pixels): quadric decimation of a whole 5M-triangle print takes ~20 s.
+CLUSTER_ABOVE = 1_000_000
+PREVIEW_CELLS = 256
+
+
 def _decimated(mesh: trimesh.Trimesh, max_faces: int) -> tuple[np.ndarray, np.ndarray]:
     """Vertices and faces with at most ``max_faces`` faces (quadric decimation)."""
     vertices = np.asarray(mesh.vertices, dtype=float)
     faces = np.asarray(mesh.faces)
     if len(faces) <= max_faces:
         return vertices, faces
+    if len(faces) > max(CLUSTER_ABOVE, 8 * max_faces):
+        vertices, faces = _clustered(vertices, faces, PREVIEW_CELLS)
+        if len(faces) <= max_faces:
+            return vertices, faces
     try:
         # The same decimation as Trimesh.simplify_quadric_decimation, without building (and
         # vertex-merging) a Trimesh around the result: the triangles are the same.

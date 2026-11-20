@@ -9,6 +9,12 @@ from __future__ import annotations
 from .common import MESH_EXTS, ShapeEndpoint, call, extract_path
 from .trellis import _handle
 
+# Most faces the Space may keep: "Max. Number of Faces" is a plain number field (no upper
+# bound, app.py checked 2026-11), so ask for the 10M Forma keeps (process.MAX_FACES) instead of
+# its 400k default.
+# The mesh comes from an octree at 384, so it may stop short: the preparation tops it up.
+TRIANGLES = 10_000_000
+
 
 class Step1XEndpoint(ShapeEndpoint):
     key = "step1x-3d"
@@ -22,7 +28,7 @@ class Step1XEndpoint(ShapeEndpoint):
         steps = {"draft": 25, "standard": 50, "high": 75}.get(quality, 50)
         out = call(client, "/generate_func", progress, "shape", "Step1X-3D genera la forma",
                    timeout_s, (0.0, 1.0), input_image_path=_handle(image_path),
-                   guidance_scale=7.5, inference_steps=steps, max_facenum=400000,
+                   guidance_scale=7.5, inference_steps=steps, max_facenum=TRIANGLES,
                    symmetry="x", edge_type="sharp")
         # First output is the untextured geometry: exactly what we want.
         first = out[0] if isinstance(out, (list, tuple)) and out else out

@@ -1,5 +1,5 @@
 # Forma — comandi di sviluppo. `make help` per l'elenco.
-.PHONY: help install install-gpu dev offline backend frontend test e2e screenshots lint build serve docker docker-gpu clean
+.PHONY: help install install-gpu install-idol dev offline backend frontend test e2e screenshots lint build serve docker docker-gpu clean
 
 PORT ?= 8000
 
@@ -13,14 +13,17 @@ install: ## dipendenze di backend (uv) e frontend (npm)
 install-gpu: ## extra per l'inferenza locale su GPU NVIDIA (poi i pacchetti dei modelli: vedi README)
 	cd backend && uv sync --extra gpu
 
+install-idol: ## Idol (speridlabs/idol) sulla tua GPU NVIDIA da 8 GB, anche su Windows: PyTorch con CUDA e l'SDK
+	cd backend && uv sync --extra idol
+
 dev: ## backend con reload + frontend Vite insieme: http://localhost:5173
 	@trap 'kill 0' INT TERM EXIT; \
 	(cd backend && uv run uvicorn app.main:app --reload --host 127.0.0.1 --port $(PORT)) & \
 	(cd frontend && npm run dev) & \
 	wait
 
-offline: ## come dev, ma senza rete né token: forme procedurali
-	GEN_PROVIDER=procedural $(MAKE) dev
+offline: ## come dev, ma senza rete né token: forme procedurali (anche dalle immagini)
+	GEN_PROVIDER=procedural IMAGE_TO_3D=procedural: $(MAKE) dev
 
 backend: ## solo il backend con reload
 	cd backend && uv run uvicorn app.main:app --reload --host 127.0.0.1 --port $(PORT)
@@ -37,9 +40,12 @@ E2E_API ?= 8000
 E2E_WEB ?= 4173
 E2E_CMD ?= node frontend/e2e/flows.cjs
 
+# IMAGE_TO_3D=procedural: le immagini vanno alle forme offline invece che a Idol (niente GPU).
+# FORMA_MIN_FACES=0: niente minimo di 5 milioni di triangoli per modello, che Chromium senza GPU
+# (rendering software) disegnerebbe a fatica; l'app vera lo tiene sempre.
 e2e: build ## flussi end-to-end in Chromium (Playwright) su dati temporanei e provider offline
 	@data=$$(mktemp -d); \
-	(cd backend && GEN_PROVIDER=procedural DATA_DIR="$$data" exec uv run uvicorn app.main:app --host 127.0.0.1 --port $(E2E_API) >/dev/null 2>&1) & api=$$!; \
+	(cd backend && GEN_PROVIDER=procedural IMAGE_TO_3D=procedural: FORMA_MIN_FACES=0 DATA_DIR="$$data" exec uv run uvicorn app.main:app --host 127.0.0.1 --port $(E2E_API) >/dev/null 2>&1) & api=$$!; \
 	(cd frontend && FORMA_API_URL=http://127.0.0.1:$(E2E_API) exec node node_modules/vite/bin/vite.js preview --host 127.0.0.1 --port $(E2E_WEB) >/dev/null 2>&1) & web=$$!; \
 	for i in $$(seq 1 60); do curl -sf http://127.0.0.1:$(E2E_API)/api/health >/dev/null && curl -sf http://127.0.0.1:$(E2E_WEB)/ >/dev/null && break; sleep 0.5; done; \
 	FORMA_E2E=1 FORMA_URL=http://127.0.0.1:$(E2E_WEB)/ FORMA_API_URL=http://127.0.0.1:$(E2E_API) $(E2E_CMD); status=$$?; \

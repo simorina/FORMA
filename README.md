@@ -12,14 +12,32 @@ modificabile a mano nel browser.
   prodotto" (oggetto singolo, centrato, sfondo neutro). Puoi **approvarla o chiederne un'altra**
   prima di partire col 3D, il passaggio lento che consuma quota GPU. I prompt in italiano vengono
   tradotti in inglese per FLUX (con HF_TOKEN), e l'anteprima mostra la frase inviata.
-- **Immagine → 3D** con **Pixal3D** (predefinito) o le alternative: TRELLIS.2, Step1X-3D,
-  Hunyuan3D 2.1/2mv, TRELLIS. Se lo Space del modello scelto non risponde, Forma passa da solo a
-  TRELLIS.2.
-- **Colori del modello AI.** La texture di Pixal3D o TRELLIS.2 diventa un colore per vertice che
-  resta lungo tutta la preparazione (riparazione, svuotamento, base, modifica a mano) e si vede
+- **Immagine → 3D**: sotto "Cosa vuoi stampare?" scegli **Testo** o **Immagine**; con Immagine il
+  campo diventa un riquadro dove trascini, incolli o scegli una foto (ne vedi l'anteprima). Da
+  un'immagine scegli il modello sotto "Modello 3D": **Idol sulla tua GPU NVIDIA** (predefinito, vedi
+  sotto) o uno degli Space di Hugging Face col tuo token: **Pixal3D, TRELLIS.2, Hunyuan3D 2.1,
+  Step1X-3D, Hunyuan3D 2mv, TRELLIS** (gli Hunyuan sono segnati "Non valido in UE"). Il modello
+  scelto per un'immagine è quello e basta: se lo Space non risponde o la GPU manca, Forma lo dice
+  invece di passare a un altro (`IMAGE_TO_3D`, predefinito `local:idol,hf_remote:*`). Dal testo
+  scegli allo stesso modo; lì, se lo Space scelto non risponde, Forma passa da solo a TRELLIS.2.
+- **Colori del modello AI.** La texture di Meshy, Pixal3D o TRELLIS.2 diventa un colore per vertice
+  letto **alla risoluzione della texture**: prima la mesh viene suddivisa (stessa superficie, le
+  coordinate UV seguono i nuovi vertici, le cuciture si dividono in coppia e restano chiuse), circa
+  un vertice per pixel usato della texture (2048 px: ~5,4 milioni di triangoli; 4096 px: il tetto
+  di 10 milioni), poi la texture si legge in ogni vertice. Prima si leggeva solo nei vertici del
+  modello (Meshy in Alta: ~350 mila, un colore ogni ~45 pixel) e i colori venivano sfocati. Il
+  colore resta lungo tutta la preparazione (riparazione, svuotamento, base, modifica a mano) e si vede
   nella vista 3D e nelle miniature. Per stamparlo a colori esporta in **OBJ** e trascinalo in
   **Bambu Studio**: scegli quanti colori usare e lo slot AMS di ciascuno. Anche il GLB tiene i
-  colori; STL e 3MF restano monocolore. I modelli generati prima di questa versione non hanno
+  colori (un colore per vertice, `COLOR_0`, in luce lineare a 16 bit come chiede glTF: scritti in
+  sRGB, Blender mostrava un rosso come rosa pallido) con un materiale opaco non metallico. **In
+  Blender** si vedono nella vista Material Preview
+  (tasto Z) o Rendered, oppure in Solid con Colore → Attributo; la vista Solid di partenza mostra
+  il materiale tutto grigio. Più semplice: **"Apri in Blender"** (sotto i formati, se Blender è
+  installato su questo computer) apre Blender con il modello già importato, senza il cubo di
+  partenza, inquadrato, in Material Preview e con la trasformazione colore Standard (AgX, quella
+  di Blender, spegne i colori forti). Blender si trova da solo (anche quello del Microsoft
+  Store); altrimenti `BLENDER_PATH` nel `.env`. STL e 3MF restano monocolore. I modelli generati prima di questa versione non hanno
   colori: vanno rigenerati.
 - **Ripara qualsiasi mesh**: trascina un file STL, OBJ, 3MF, GLB o PLY in un punto qualsiasi della
   finestra (o incollalo) e viene chiuso, reso manifold e preparato. Anche una foto si può
@@ -32,10 +50,16 @@ modificabile a mano nel browser.
 - **Pipeline di stampa**: rimozione dei frammenti, chiusura dei buchi, ricostruzione voxel se
   serve, normali, orientamento (in piedi livellato, **meno supporti**, disteso), scala in mm,
   **base piana** (taglia il fondo per più presa sul piatto), svuotamento con pareti misurate dalla superficie vera, base d'appoggio.
-  Il modello resta **a piena risoluzione** (tutti i triangoli che dà il modello AI, fino a 5 milioni;
-  Pixal3D in qualità Alta ne chiede 4 milioni, con la texture dei colori a 4096 px):
-  la riparazione lavora sulla mesh intera e la semplificazione, che non rompe la chiusura, scatta
-  solo oltre quella soglia.
+  **Ogni modello arriva sul piatto con almeno 5 milioni di triangoli e ne tiene fino a 10 milioni
+  dei suoi**, qualunque sia la qualità: il dettaglio calcolato dal modello non si butta (Meshy in
+  Alta ne fa fino a ~10 milioni). Pixal3D e Step1X-3D ne chiedono 10 milioni allo Space, TRELLIS.2
+  il massimo del suo, 500 mila; la texture dei colori va da 1024 px a 4096 px in qualità Alta. La
+  riparazione lavora sulla mesh intera, la semplificazione (che non rompe la chiusura) scatta solo
+  oltre i 10 milioni, e una mesh che ne ha meno di 5 milioni (TRELLIS.2, la ricostruzione voxel,
+  un file caricato, le forme offline) viene
+  **suddivisa** alla fine: nuovi vertici a metà dei lati, prima i più lunghi, senza crepe. La forma
+  resta identica (spigoli vivi e misure in mm compresi) e i colori si sfumano lungo
+  i lati.
 - **Resoconto**: grammi di filamento per PLA, PETG, ABS, ASA o TPU con il tuo riempimento,
   bobina e prezzo; metri, costo, stampe per bobina, tempo stimato per la tua stampante, copie per
   piatto, sbalzi oltre 45°, area d'appoggio sul piatto, **parti più sottili di 0,8 mm** (con
@@ -47,7 +71,13 @@ modificabile a mano nel browser.
 - **Modifica a mano**: sposta con selezione morbida e 5 curve di caduta, leviga, gonfia/sgonfia,
   simmetria X, annulla/ripeti; "Ripara e aggiorna" salva il risultato come nuovo modello.
 - **Esporta** in 3MF (millimetri, consigliato), STL binario, OBJ o GLB (metri, Y in alto),
-  con un nome che dice cos'è e quanto è grande: `pedone-degli-scacchi-100mm.3mf`.
+  con un nome che dice cos'è e quanto è grande: `pedone-degli-scacchi-100mm.3mf`. Ogni pulsante di
+  download apre un popup che segue il file fino all'ultimo byte: **Converto → Controllo → Scarico**,
+  con la percentuale, il tempo che manca e i MB arrivati. Prima di dartelo il server **rilegge il
+  file e lo confronta col modello** (numero di vertici e triangoli, primo e ultimo, CRC di tutto
+  l'archivio 3MF); la pagina controlla poi di aver ricevuto esattamente quei byte. Un file
+  incompleto o corrotto non viene mai salvato: il popup dice perché e offre Riprova. Annulla ferma
+  anche il server, e il file sul server sparisce appena scaricato.
 
 ## Aspetto
 
@@ -121,6 +151,40 @@ stampa (pochi secondi in CPU). Funziona anche **senza token**, con la quota anon
 esserci coda e la quota finisce presto, perché Pixal3D chiede fino a 30 + 120 + 240 secondi di GPU per
 modello. Con un token va molto meglio (vedi sotto).
 
+### Idol sulla tua GPU NVIDIA da 8 GB, anche su Windows (`local`, predefinito in locale)
+
+[Idol](https://huggingface.co/speridlabs/idol) (speridlabs, ottobre 2026, Apache-2.0) trasforma
+un'immagine in un milione di gaussiane 3D. Forma le converte in un solido chiuso a colori: somma la
+loro densità su una griglia di 512 celle, riempie l'interno, estrae la superficie e la leviga.
+
+```bash
+make install-idol          # PyTorch 2.15 con CUDA 13.2 (anche su Windows) e l'SDK di Idol
+# in .env: GEN_PROVIDER=local (Idol è il modello locale predefinito)
+```
+
+- Alla prima generazione scarica ~3 GB di pesi più gli encoder. **DINOv3** è ad accesso
+  vincolato: accetta i termini su
+  [huggingface.co/facebook/dinov3-vith16plus-pretrain-lvd1689m](https://huggingface.co/facebook/dinov3-vith16plus-pretrain-lvd1689m)
+  con l'account di `HF_TOKEN`. Il VAE di FLUX.2 lo prende da FLUX.2-klein-4B (Apache-2.0, libero):
+  è lo stesso di FLUX.2-dev in bf16, la precisione in cui Idol lo usa (`IDOL_FLUX2_VAE` per cambiarlo).
+- Misurato su una RTX 4070 portatile (8 GB): ~105 s per un milione di gaussiane a 50 passi, più
+  ~15 s per la prima volta; picco di 5 GB di VRAM (gli encoder aspettano nella RAM di sistema);
+  la superficie ~5–15 s. Su Windows niente `torch.compile` (servirebbe Triton).
+- Nel riquadro Immagine scegli **Foto** (un oggetto vero) o **Render o AI**: Idol inquadra
+  l'oggetto in modo diverso. Dal testo l'immagine la fa FLUX su Hugging Face (in locale servirebbero
+  20 GB di VRAM), il 3D resta sulla tua GPU.
+- Limiti: i dettagli filiformi (il gambo di una ciliegia) si spezzano, e i colori escono un po' più
+  scuri della foto, soprattutto sul metallo lucido.
+- **Rifinitura con Hi3D** (interruttore nel riquadro Immagine, acceso di predefinito): dopo Idol la
+  forma va a [Hi3D v1.0](https://huggingface.co/hi3d-official/Hi3Dv1.0) (ottobre 2026) sul suo Space
+  Hugging Face, col tuo `HF_TOKEN`. Hi3D ricostruisce la geometria guardando l'immagine, a 512³, 1024³
+  o 1536³ secondo la qualità (Bozza, Standard, Alta): spigoli, denti, orbite e placche escono netti
+  dove Idol li arrotonda. I colori restano quelli di Idol. Costa quota GPU di Hugging Face: lo Space
+  ne riserva ~1, ~4 o ~8 minuti; provato a 1024³ ha impiegato 102 s. Lo Space di Hi3D farebbe la
+  forma grezza con Hunyuan3D-2mini (licenza non valida in UE): Forma gli manda sempre quella di Idol.
+  Se lo Space è giù o la quota è finita, resta la forma di Idol e il resoconto dice perché; mai un
+  altro modello. Hi3D in locale non gira: vuole Linux e una GPU da 96 GB.
+
 ### Linux con GPU NVIDIA (`local`)
 
 Per avere tutto in casa, senza code né quote: GPU con almeno 24 GB di VRAM (Pixal3D ha anche una
@@ -139,6 +203,43 @@ GEN_PROVIDER=local make dev
 Oppure `make docker-gpu`: l'immagine `Dockerfile.gpu` fa gli stessi passi (CUDA 12.4, PyTorch 2.6,
 installer ufficiali ai commit verificati) e risponde su http://localhost:8001. La prima generazione
 scarica i pesi (alcune decine di GB) nel volume `forma-data`.
+
+### Meshy (API a crediti, `meshy`)
+
+[Meshy](https://www.meshy.ai/it/api) genera sul suo cloud, da prompt e da immagine, con i colori.
+In Forma è un fornitore come gli altri ("Meshy" accanto a Remoto, GPU locale e Offline) e una delle
+scelte per le immagini.
+
+```bash
+# in .env: la chiave dalla pagina API Keys di Meshy (piano Pro o superiore)
+MESHY_API_KEY=msy_...
+```
+
+- **Da immagine**: Image to 3D, forma e texture in un solo task. **Da prompt**: come su meshy.ai, il
+  prompt va a Meshy Text to 3D così come lo scrivi (Meshy legge anche l'italiano, nessuna traduzione
+  e nessuna immagine FLUX in mezzo), in due passi: la forma (preview) e poi i colori (refine). Con
+  Meshy l'interruttore "Mostrami prima l'immagine" non c'è.
+- Sempre Meshy 7.1, senza remesh, solo GLB. La qualità sceglie la geometria: Bozza standard,
+  Standard Ultra 2K (2048³), Alta Ultra 4K (4096³). Texture 2K, 4K in Alta. Il GLB con la texture
+  che l'API consegna in Alta ha però **circa 400–700 mila triangoli** (misurato su tre modelli,
+  novembre 2026), non i milioni del calcolo interno: la forma è quella. Il dettaglio fine sta nella
+  texture 4K, che Forma legge a ~10 milioni di triangoli (vedi Colori del modello AI).
+- **Crediti** (listino di novembre 2026): immagine 30, 35 con la geometria Ultra; prompt 20 + 10, 25
+  + 10 con Ultra. Il resoconto dice quanti ne ha usati il modello. Un task fallito viene rimborsato.
+- Come chiede Meshy, una richiesta di creazione non viene mai ripetuta da sola dopo un timeout o un
+  errore 5xx (il task potrebbe essere partito e pagato): Forma lo dice e lascia decidere a te.
+  L'attesa rispetta `Retry-After`; il tempo massimo è `MESHY_TIMEOUT_S` (30 minuti).
+- La chiave va solo alle API di Meshy, mai allo storage da cui si scarica il modello. Senza chiave
+  Meshy resta spento e dice come attivarlo. La chiave di prova condivisa di Meshy è stata ritirata
+  il 16 settembre 2026: per provarlo serve la tua.
+- **Rilievo** (terza modalità, accanto a Testo e Immagine): da una foto un **bassorilievo** con la
+  Relief API di Meshy (novembre 2026), 20 crediti, circa 1–2 minuti. Scegli rilievo alto (stampa
+  3D, 6 mm) o basso (incisione e CNC, 3 mm), in rilievo o inciso, la profondità (0–60 mm, vuoto =
+  quella di Meshy), con base (spessore 0,1–10 mm) o senza (resta il soggetto), piatto o curvo
+  (convesso o concavo, angolo 0–360°, ai lati o sopra e sotto). Il lato lungo è quello di
+  Dimensioni (20–250 mm); la qualità sceglie i punti per lato: 512, 1024, 2048. Arriva in STL, in
+  millimetri, sdraiato sul piatto con la faccia in su, e Forma non lo ruota. Le combinazioni che
+  Meshy farebbe pagare per un modello vuoto (senza base e profondità 0) vengono fermate prima.
 
 ## HF_TOKEN, quota e costi
 
@@ -270,11 +371,19 @@ Cosa resta da verificare, e come, è in [docs/LAVORO-APERTO.md](docs/LAVORO-APER
 - **L'immagine Docker GPU** non è stata costruita (né demone Docker né GPU nell'ambiente di
   sviluppo); quella CPU ha la configurazione validata con `docker compose config`.
 - **Tempo e costo** sono stime da un profilo standard da 0,2 mm: lo slicer dà quelli esatti.
-- Tutto lavora a piena risoluzione, e con ~4 milioni di triangoli (Pixal3D in qualità Alta) costa:
-  preparazione 30–50 s (anche "Applica"), caricamento nella vista ~2 s più il GLB da ~70 MB, entrata
-  in modifica ~1,5 s; file esportati da STL ~180 MB, 3MF ~70 MB, OBJ a colori ~380 MB. Pixal3D
-  calcola la forma su una griglia di 1536³: oltre il milione di triangoli le superfici sono più
-  fini, ma non compaiono dettagli nuovi. Le modifiche a mano tornano come STL: upload fino a 256 MB.
+- Ogni modello ha almeno 5 milioni di triangoli, e costa: preparazione 30–50 s (anche "Applica";
+  la suddivisione ne prende 2–4, la miniatura ~1 s), GLB per la vista ~90 MB, entrata in modifica
+  ~1,5 s. File a 5 milioni di triangoli, dal clic al file salvato (lettura del modello ~2 s,
+  scrittura, controllo, scaricamento): STL 238 MB ~5 s, 3MF 75 MB ~12 s, OBJ a colori 240 MB ~8 s,
+  GLB 95 MB ~6 s. Un modello che ne tiene 10 milioni (Meshy in Alta, Pixal3D) costa il doppio:
+  preparazione ~75 s, fino a ~8 GB di RAM nel backend, GLB per la vista ~190 MB; file STL 472 MB,
+  3MF 148 MB, OBJ a colori 462 MB, GLB 189 MB (scrittura e controllo da 2 a 23 s, più lo
+  scaricamento). **Più triangoli non vuol dire più dettaglio**: il dettaglio è quello che il modello AI ha
+  calcolato (Pixal3D su una griglia di 1536³, TRELLIS.2 su 500 mila triangoli). La suddivisione
+  porta i lati a 0,1–0,2 mm su un pezzo da 100 mm, sotto l'ugello e lo strato, ma non inventa
+  forme nuove. Le modifiche a mano tornano come STL: upload fino a 512 MB.
+- `FORMA_MIN_FACES` abbassa il minimo, solo per test e flussi e2e (`make e2e` lo mette a 0): il
+  Chromium senza GPU dei flussi disegna in software.
 
 ## Licenza
 

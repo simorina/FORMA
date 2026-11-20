@@ -37,12 +37,32 @@ export interface ProviderInfo {
   models: ModelInfo[];
 }
 
+/** A model an uploaded picture may go to (Idol on this machine's GPU, TRELLIS.2 on its Space). */
+export const routeKey = (r: Pick<ImageRoute, 'provider' | 'model'>) => `${r.provider}:${r.model}`;
+
+export interface ImageRoute {
+  provider: string;
+  model: string;
+  label: string;
+  available: boolean;
+  reason: string;
+  description?: string;
+  license?: string;
+  eu_restricted?: boolean;
+  notes?: string[];
+}
+
 export interface ProvidersResponse {
   default: string;
   hf_token: boolean;
   providers: ProviderInfo[];
+  /** the models an uploaded picture may go to, the default first */
+  image_routes?: ImageRoute[];
+  image_to_3d?: ImageRoute;
   formats: string[];
   defaults: PrintSettings;
+  /** a Blender on the backend's computer: "Apri in Blender" */
+  blender?: boolean;
 }
 
 export interface Report {
@@ -69,6 +89,21 @@ export interface Report {
 }
 
 export type ExportFormat = 'stl' | '3mf' | 'obj' | 'glb';
+
+/** A file being written and checked on the server (see lib/download.ts). */
+export interface ExportJob {
+  id: string;
+  model_id: string;
+  format: ExportFormat;
+  filename: string;
+  status: 'running' | 'ready' | 'error' | 'cancelled';
+  stage: 'load' | 'write' | 'check' | 'ready';
+  progress: number;
+  message: string;
+  size: number | null;
+  error: string | null;
+  url: string;
+}
 
 export interface Model {
   id: string;
@@ -131,7 +166,7 @@ export interface Draft {
 export const MESH_EXTENSIONS = ['stl', 'obj', '3mf', 'glb', 'ply', 'off'];
 
 /** Largest photo or mesh the backend accepts. */
-export const MAX_UPLOAD = 256 * 1024 * 1024;
+export const MAX_UPLOAD = 512 * 1024 * 1024;
 
 export class ApiError extends Error {
   constructor(
@@ -163,8 +198,37 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+export type ImageKind = 'real' | 'synthetic';
+
+/** A bas-relief by Meshy (Relief API): its look; the size is the print's longest side. */
+export interface ReliefOptions {
+  variant: 'high' | 'low';
+  carving_mode: 'emboss' | 'engrave';
+  /** millimetres, or null for Meshy's own (6 for high, 3 for low) */
+  carving_depth_mm: number | null;
+  remove_base: boolean;
+  base_thickness_mm: number;
+  bend_mode: 'off' | 'convex' | 'concave';
+  bend_axis: 'xz' | 'yz';
+  bend_angle: number;
+}
+
+export const DEFAULT_RELIEF: ReliefOptions = {
+  variant: 'high', carving_mode: 'emboss', carving_depth_mm: null, remove_base: false,
+  base_thickness_mm: 1, bend_mode: 'off', bend_axis: 'xz', bend_angle: 60,
+};
+
 export const api = {
   providers: () => request<ProvidersResponse>('/api/providers'),
+
+  /** Start writing (and checking) a model in a format; then poll exportStatus. */
+  startExport: (modelId: string, fmt: ExportFormat) =>
+    request<ExportJob>(`/api/models/${modelId}/export?format=${fmt}`, { method: 'POST' }),
+  exportStatus: (exportId: string) => request<ExportJob>(`/api/exports/${exportId}`),
+  cancelExport: (exportId: string) => request<{ ok: boolean }>(`/api/exports/${exportId}`, { method: 'DELETE' }),
+  /** Open the model in Blender on the backend's computer, its colours showing. */
+  openInBlender: (modelId: string) =>
+    request<{ ok: boolean; file: string }>(`/api/models/${modelId}/blender`, { method: 'POST' }),
 
   generate(input: {
     prompt: string;
@@ -174,6 +238,12 @@ export const api = {
     quality: Quality;
     settings: Partial<PrintSettings>;
     image: File | null;
+    /** what the picture is: 'real' (a photo) or 'synthetic' (a render, a generated image) */
+    imageKind?: ImageKind;
+    /** 'hi3d': Idol's shape is then refined by Hi3D on its Hugging Face Space */
+    refine?: string;
+    /** a bas-relief of the picture by Meshy, with these options */
+    relief?: ReliefOptions | null;
     draft?: string | null;
   }) {
     const form = new FormData();
@@ -184,7 +254,12 @@ export const api = {
     form.set('quality', input.quality);
     form.set('settings', JSON.stringify(input.settings));
     if (input.draft) form.set('draft', input.draft);
-    else if (input.image) form.set('image', input.image, input.image.name);
+    else if (input.image) {
+      form.set('image', input.image, input.image.name);
+      if (input.imageKind) form.set('image_kind', input.imageKind);
+      if (input.refine) form.set('refine', input.refine);
+      if (input.relief) form.set('relief', JSON.stringify(input.relief));
+    }
     return request<{ job_id: string; job: Job }>('/api/generate', { method: 'POST', body: form });
   },
 

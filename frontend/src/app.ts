@@ -3,8 +3,8 @@
  * the viewer is driven from here.
  */
 import {
-  ApiError, MAX_UPLOAD, MESH_EXTENSIONS, api,
-  type Draft, type Job, type Model, type PrintSettings, type ProvidersResponse, type Quality,
+  ApiError, MAX_UPLOAD, MESH_EXTENSIONS, api, routeKey,
+  DEFAULT_RELIEF, type Draft, type ExportFormat, type ImageKind, type ImageRoute, type Job, type ReliefOptions, type Model, type PrintSettings, type ProvidersResponse, type Quality,
 } from './lib/api';
 import { DEFAULT_FILAMENT, filamentByKey, uiColor } from './lib/filaments';
 import { estimate, materialByKey, type Estimate } from './lib/materials';
@@ -27,8 +27,14 @@ interface GenerateRequest {
   quality: Quality;
   settings: Partial<PrintSettings>;
   image: File | null;
+  imageKind?: ImageKind;
+  refine?: string;
+  relief?: ReliefOptions | null;
   draft?: string | null;
 }
+
+/** What the 3D model starts from: words (turned into a picture first) or a picture. */
+export type Source = 'text' | 'image' | 'relief';
 
 export interface AppState {
   providers: ProvidersResponse | null;
@@ -37,8 +43,16 @@ export interface AppState {
   modelKey: string | null;
   quality: Quality;
   prompt: string;
+  source: Source;
   image: File | null;
   imageUrl: string | null;
+  imageKind: ImageKind;
+  /** refine Idol's shape with Hi3D on its Hugging Face Space (pictures only) */
+  refine: boolean;
+  /** the model chosen for pictures ("provider:model"), among the backend's image routes */
+  imageModel: string;
+  /** how a picture becomes a bas-relief (Meshy Relief) */
+  relief: ReliefOptions;
   settings: PrintSettings;
   printer: string;
   custom: { w: number; d: number; h: number };
@@ -77,7 +91,7 @@ export const EDITABLE = ['target_size_mm', 'orientation', 'flat_bottom_mm', 'hol
 
 const FALLBACK_SETTINGS: PrintSettings = {
   target_size_mm: 100, orientation: 'upright', flat_bottom_mm: 0, hollow: false, wall_mm: 2, base_plate: false,
-  base_thickness_mm: 2, base_margin_mm: 3, decimate: true, target_faces: 5000000, remove_debris: true,
+  base_thickness_mm: 2, base_margin_mm: 3, decimate: true, target_faces: 10000000, remove_debris: true,
   repair_resolution: 384,
 };
 
@@ -90,8 +104,13 @@ function initial(): AppState {
     modelKey: saved.get<string | null>('model', null),
     quality: saved.get<Quality>('quality', 'standard'),
     prompt: '',
+    source: 'text',
     image: null,
     imageUrl: null,
+    imageKind: saved.get<ImageKind>('imageKind', 'real'),
+    refine: saved.get('refine', true),
+    imageModel: saved.get('imageModel', ''),
+    relief: { ...DEFAULT_RELIEF, ...saved.get<Partial<ReliefOptions>>('relief', {}) },
     settings: { ...FALLBACK_SETTINGS, ...saved.get<Partial<PrintSettings>>('settings', {}) },
     printer: saved.get('printer', PRINTERS[0].key),
     custom: saved.get('custom', { w: 200, d: 200, h: 200 }),
@@ -130,6 +149,8 @@ export class App {
   // equal values must not wake every panel
   readonly store: Store<AppState> = createStore(initial(), { shape: sameItems, sculpt: sameFields, job: sameJson });
   viewer: Viewer | null = null;
+  /** Opens the download popup (ui/download.ts mounts it). */
+  downloader: ((model: Model, fmt: ExportFormat) => void) | null = null;
   private pollTimer = 0;
   /** for Riprova; no view shows it, so it stays out of the store (a set would wake every panel) */
   private lastRequest: GenerateRequest | null = null;
@@ -243,18 +264,26 @@ export class App {
 
   // -- generation ------------------------------------------------------------------------
   canGenerate(s = this.state): boolean {
-    return !this.working(s) && !s.offline && (s.prompt.trim().length > 0 || !!s.image);
+    return !this.working(s) && !s.offline && (s.source === 'text' ? s.prompt.trim().length > 0 : !!s.image);
   }
 
   private request(s: AppState, extra: Partial<GenerateRequest> = {}): GenerateRequest {
+    const image = s.source === 'text' ? null : s.image;
+    const relief = s.source === 'relief';
+    // a picture goes only where the backend sends pictures (Idol on this GPU), whatever is chosen for text
+    const route = image && !relief ? this.imageRoute(s) : undefined;
     return {
-      prompt: s.prompt.trim(),
-      provider: s.provider,
-      model: s.modelKey,
+      // from a picture, its file name names the model ("gufo-ceramica.png": "gufo ceramica")
+      prompt: image ? image.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim() : s.prompt.trim(),
+      provider: relief ? 'meshy' : route?.provider ?? s.provider,
+      model: relief ? 'relief' : route ? route.model || null : s.modelKey,
       seed: Math.floor(Math.random() * 2 ** 31),
       quality: s.quality,
       settings: this.pick(s.settings),
-      image: s.image,
+      image,
+      imageKind: s.imageKind,
+      refine: image && s.refine && route?.model === 'idol' ? 'hi3d' : '',
+      relief: relief ? s.relief : null,
       ...extra,
     };
   }
@@ -262,13 +291,20 @@ export class App {
   async generate(): Promise<void> {
     const s = this.state;
     if (this.working()) return;
-    if (!s.prompt.trim() && !s.image) {
-      toast('Scrivi cosa vuoi stampare o carica una foto.');
+    if (s.source !== 'text' && !s.image) {
+      toast(s.source === 'relief'
+        ? 'Scegli la foto per il rilievo: trascinala nel riquadro o incollala.'
+        : 'Scegli un’immagine: trascinala nel riquadro o incollala.');
+      return;
+    }
+    if (s.source === 'text' && !s.prompt.trim()) {
+      toast('Scrivi cosa vuoi stampare, o passa a Immagine.');
       return;
     }
     if (s.edit) this.setEdit(false);
     // From text, show the picture first: the 3D step is the slow one that spends GPU quota.
-    if (s.reviewImage && !s.image) {
+    // Meshy works as on meshy.ai: the prompt goes straight to its Text to 3D, no picture between.
+    if (s.reviewImage && s.source === 'text' && s.provider !== 'meshy') {
       await this.preview();
       return;
     }
@@ -376,6 +412,8 @@ export class App {
     this.store.set({ job: null });
     const fb = model.gen_meta?.fallback_from;
     if (fb) toast(`${fb} non era disponibile: modello generato con ${model.model}.`);
+    // Idol's shape stays when Hi3D cannot refine it: say why
+    if (model.gen_meta?.hi3d_error) toast(`Hi3D non ha rifinito la forma: ${model.gen_meta.hi3d_error} Resta quella di Idol.`);
   }
 
   dismissJob(): void {
@@ -535,7 +573,7 @@ export class App {
   takeFile(f: File, opts: { quiet?: boolean } = {}): 'mesh' | 'image' | null {
     const ext = f.name.split('.').pop()?.toLowerCase() ?? '';
     if (f.size > MAX_UPLOAD) {
-      toast('Il file supera 256 MB.', { tone: 'negative' });
+      toast('Il file supera 512 MB.', { tone: 'negative' });
       return null;
     }
     if (MESH_EXTENSIONS.includes(ext)) {
@@ -553,7 +591,7 @@ export class App {
     this.setImage(f);
     if (!opts.quiet) {
       this.setPanel('create');
-      toast('Foto pronta: premi Genera per farne un modello 3D.');
+      toast('Immagine pronta: premi Genera per farne un modello 3D.');
     }
     return 'image';
   }
@@ -604,10 +642,77 @@ export class App {
     saved.set('quality', q);
   }
 
+  /** A picture to start from: the box switches to it. None: the box waits for another. */
   setImage(file: File | null): void {
     const old = this.state.imageUrl;
     if (old) URL.revokeObjectURL(old);
-    this.store.set({ image: file, imageUrl: file ? URL.createObjectURL(file) : null });
+    // a picture switches to Immagine, unless the box is making a relief of it
+    const source = file && this.state.source === 'text' ? { source: 'image' as const } : {};
+    this.store.set({ image: file, imageUrl: file ? URL.createObjectURL(file) : null, ...source });
+  }
+
+  setRelief(patch: Partial<ReliefOptions>): void {
+    const relief = { ...this.state.relief, ...patch };
+    this.store.set({ relief });
+    saved.set('relief', relief);
+  }
+
+  /** Start from words or from a picture (a picture chosen before stays for when it comes back). */
+  setSource(source: Source): void {
+    this.store.set({ source, draft: null });
+  }
+
+  setImageKind(kind: ImageKind): void {
+    this.store.set({ imageKind: kind });
+    saved.set('imageKind', kind);
+  }
+
+  /** The current model as a file: prepared, checked and fetched in the download popup. */
+  download(fmt: ExportFormat): void {
+    const c = this.state.current;
+    if (!c || !this.downloader) return;
+    if (this.state.sculpt.steps > 0) {
+      toast('Ripara le modifiche prima di scaricare: il file non le avrebbe.');
+      return;
+    }
+    this.downloader(c, fmt);
+  }
+
+  /** The current model in Blender, on this computer: imported, framed, colours showing. */
+  async openInBlender(): Promise<void> {
+    const c = this.state.current;
+    if (!c) return;
+    if (this.state.sculpt.steps > 0) {
+      toast('Ripara le modifiche prima di aprirlo in Blender: il file non le avrebbe.');
+      return;
+    }
+    try {
+      await api.openInBlender(c.id);
+      toast('Blender si sta aprendo con il modello a colori (vista Material Preview).');
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), { tone: 'negative' });
+    }
+  }
+
+  /** The models a picture may go to, and the one chosen (the default when none or gone). */
+  imageRoutes(s = this.state): ImageRoute[] {
+    const p = s.providers;
+    return p?.image_routes ?? (p?.image_to_3d ? [p.image_to_3d] : []);
+  }
+
+  imageRoute(s = this.state): ImageRoute | undefined {
+    const routes = this.imageRoutes(s);
+    return routes.find((r) => routeKey(r) === s.imageModel) ?? routes[0];
+  }
+
+  setImageModel(key: string): void {
+    this.store.set({ imageModel: key });
+    saved.set('imageModel', key);
+  }
+
+  setRefine(on: boolean): void {
+    this.store.set({ refine: on });
+    saved.set('refine', on);
   }
 
   // -- view ------------------------------------------------------------------------------

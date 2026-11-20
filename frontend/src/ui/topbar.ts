@@ -97,7 +97,7 @@ export function mountTopbar(root: HTMLElement, app: App): void {
     { class: 'icon-btn hide-phone', type: 'button', 'aria-label': 'Scorciatoie da tastiera (?)', title: 'Scorciatoie · ?', onclick: () => app.store.set({ shortcuts: true }) },
     icon('help'),
   );
-  const download = h('a', { class: 'btn btn-primary btn-download', role: 'button' }, icon('download'), h('span', { class: 'btn-label' }, 'Scarica 3MF'));
+  const download = h('button', { class: 'btn btn-primary btn-download', type: 'button' }, icon('download'), h('span', { class: 'btn-label' }, 'Scarica 3MF'));
   const rule = h('span', { class: 'vrule hide-phone', 'aria-hidden': 'true' });
 
   root.append(
@@ -151,14 +151,12 @@ export function mountTopbar(root: HTMLElement, app: App): void {
     }
     mounted = true;
     if (c) {
-      attr(download, 'href', c.urls.export['3mf']);
-      attr(download, 'download', '');
       attr(download, 'aria-disabled', String(!ready));
       prop(download, 'title', ready ? 'Scarica il file per lo slicer (3MF, millimetri)' : 'Ripara le modifiche prima di scaricare');
     }
   };
-  download.addEventListener('click', (e) => {
-    if (download.getAttribute('aria-disabled') === 'true') e.preventDefault();
+  download.addEventListener('click', () => {
+    if (download.getAttribute('aria-disabled') !== 'true') app.download('3mf');
   });
   app.store.subscribe(update);
   update(app.state);

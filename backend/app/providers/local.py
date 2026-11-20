@@ -32,9 +32,20 @@ from .base import (
     load_mesh_file,
     looks_italian,
 )
+from .endpoints.pixal3d import TRIANGLES
+from .idol_local import QUALITY as IDOL_QUALITY
+from .idol_local import IdolRunner
 
 HUNYUAN_LICENSE = "Tencent Hunyuan 3D 2.1 Community License (esclusi UE/UK/KR)"
 LOCAL_MODELS = {
+    "idol": ModelInfo(
+        "idol", "Idol",
+        "speridlabs/idol, ott. 2026, sulla tua GPU NVIDIA (8 GB di VRAM bastano): l'immagine "
+        "diventa un milione di gaussiane, poi un solido chiuso a colori.",
+        "Apache-2.0",
+        notes=["Circa 2 minuti su una RTX 4070 portatile. Dal testo, l'immagine la fa FLUX su "
+               "Hugging Face; il 3D resta sulla tua GPU."],
+    ),
     "pixal3d": ModelInfo(
         "pixal3d", "Pixal3D", "TencentARC/Pixal3D in locale (≥24 GB VRAM).",
         "MIT",
@@ -80,7 +91,7 @@ SAMPLERS = {
 class LocalProvider(Provider):
     name = "local"
     label = "GPU locale (CUDA)"
-    description = "Esegue FLUX.1-schnell e il modello 3D sulla tua GPU NVIDIA. Nessuna coda."
+    description = "Il modello 3D gira sulla tua GPU NVIDIA: nessuna coda, nessuna quota."
 
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
@@ -89,6 +100,34 @@ class LocalProvider(Provider):
         self._shape: dict[str, Any] = {}
         self._moge: Any = None
         self._mt: Any = None  # translation pipeline
+        self._idol = IdolRunner(self.settings.data_dir, self.settings.idol_vae)
+        self._hf: Provider | None = None
+        self._client_factory: Any = None  # Gradio clients for the Hi3D Space (tests swap it)
+
+    def _remote_images(self) -> bool:
+        """Text -> image on Hugging Face instead of this GPU: FLUX.1-schnell wants ~24 GB of
+        weights, so "auto" keeps it local only on a GPU with at least 20 GB."""
+        mode = self.settings.local_text_to_image
+        if mode in ("local", "remote"):
+            return mode == "remote"
+        try:
+            import torch
+
+            return torch.cuda.get_device_properties(0).total_memory < 20 * 2**30
+        except Exception:
+            return True
+
+    def _remote(self) -> Provider:
+        if self._hf is None:
+            from .hf_remote import HFRemoteProvider
+
+            self._hf = HFRemoteProvider(self.settings)
+        return self._hf
+
+    def _text_image(self, prompt: str, seed: int, progress: ProgressFn):
+        if self._remote_images():
+            return self._remote().image(prompt, seed, progress)
+        return self._flux_image(prompt, seed, progress)
 
     def models(self) -> list[ModelInfo]:
         default = self.settings.local_shape_model
@@ -188,14 +227,14 @@ class LocalProvider(Provider):
         distance = f_pixels * xw / (0 - res / 2.0) - yw
         return {"camera_angle_x": angle, "distance": distance, "mesh_scale": 1.0}
 
-    def _to_glb_mesh(self, mesh: Any, pipe: Any, res: Any, rotate: bool, quality: str):
+    def _to_glb_mesh(self, mesh: Any, pipe: Any, res: Any, rotate: bool):
         import o_voxel  # type: ignore
 
         glb = o_voxel.postprocess.to_glb(
             vertices=mesh.vertices, faces=mesh.faces, attr_volume=mesh.attrs, coords=mesh.coords,
             attr_layout=getattr(pipe, "pbr_attr_layout", None) or mesh.layout,
             grid_size=res, aabb=[[-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]],
-            decimation_target=1_000_000 if quality == "high" else 500_000, texture_size=1024,
+            decimation_target=TRIANGLES, texture_size=1024,  # 10M, as the Pixal3D Space
             remesh=True, remesh_band=1, remesh_project=0,
         )
         if rotate:
@@ -207,7 +246,9 @@ class LocalProvider(Provider):
 
     def english(self, prompt: str) -> str:
         """Italian -> English for FLUX with a small MarianMT model on the CPU (lazy, cached);
-        the original prompt on any failure."""
+        the original prompt on any failure. On Hugging Face when the picture is made there."""
+        if self._remote_images():
+            return self._remote().english(prompt)
         text = prompt.strip()
         model = self.settings.hf_translate_model
         if not text or not model or not looks_italian(text):
@@ -234,25 +275,92 @@ class LocalProvider(Provider):
         ).images[0]
 
     def image(self, prompt: str, seed: int = 0, progress: ProgressFn = lambda *a: None):
+        if self._remote_images():
+            return self._remote().image(prompt, seed, progress)
         ok, reason = self.available()
         if not ok:
             raise ProviderError(reason)
         with self._lock:
             return self._flux_image(prompt, seed, progress)
 
+    def _idol_mesh(self, image: Any, params: GenParams, progress: ProgressFn) -> tuple[Any, dict[str, Any]]:
+        """Idol's Gaussians for ``image``, made a closed coloured solid (Z up, unit cube)."""
+        from ..pipeline.splats import splats_to_mesh
+
+        if not IdolRunner.installed():
+            raise ProviderError("Idol non è installato: esegui `make install-idol` (PyTorch con CUDA "
+                                "e l'SDK di speridlabs).")
+        # "real": a photo of a real object; "synthetic": a render or a generated picture.
+        kind = str(params.extra.get("image_kind") or "")
+        mode = kind if kind in ("real", "synthetic") else "synthetic"
+        try:
+            splats, _ = self._idol.generate(
+                image, mode, params.seed, params.quality,
+                lambda f, msg: progress("shape", 0.05 + 0.8 * f, msg))
+        except Exception as exc:
+            text = str(exc).lower()
+            if "gated" in text or "terms" in text:
+                raise ProviderError(
+                    "Idol legge le immagini con DINOv3, un modello ad accesso vincolato: accetta i "
+                    "termini su huggingface.co/facebook/dinov3-vith16plus-pretrain-lvd1689m con "
+                    "l'account di HF_TOKEN.", kind="auth") from exc
+            if "out of memory" in text:
+                raise ProviderError("Memoria della GPU esaurita: chiudi i programmi che la usano "
+                                    "(giochi, altri modelli) e riprova.") from exc
+            raise
+        progress("shape", 0.8, "Ricavo la superficie dalle gaussiane")
+        _, _, cells = IDOL_QUALITY.get(params.quality, IDOL_QUALITY["standard"])
+        mesh = splats_to_mesh(splats, resolution=cells)
+        meta: dict[str, Any] = {"up": "z", "gaussians": len(splats), "idol_mode": mode}
+        if params.extra.get("refine") == "hi3d":
+            mesh = self._hi3d(image, mesh, params, progress, meta)
+        return mesh, meta
+
+    def _hi3d(self, image: Any, mesh: Any, params: GenParams, progress: ProgressFn,
+              meta: dict[str, Any]) -> Any:
+        """Idol's shape refined by Hi3D on its Space, or Idol's shape as it was (with the reason
+        in ``meta``) when the Space cannot: never another model."""
+        from .endpoints import hi3d
+
+        space = self.settings.hf_space_hi3d
+        progress("shape", 0.82, f"Connessione a {space}")
+        try:
+            if self._client_factory is None:
+                from .hf_remote import default_client_factory
+
+                self._client_factory = default_client_factory(self.settings)
+            refined, grid = hi3d.refine(
+                self._client_factory(space), image, mesh, params.quality, params.seed, progress,
+                self.settings.hf_timeout_s, space=space, span=(0.83, 0.99))
+        except Exception as exc:  # the Space is out of quota, asleep, changed its API...
+            reason = str(exc) if isinstance(exc, ProviderError) else str(hi3d.friendly_error(exc, space))
+            meta["hi3d_error"] = reason[:300]
+            progress("shape", 0.99, "Hi3D non disponibile: tengo la forma di Idol")
+            return mesh
+        meta.update(refine="hi3d", hi3d_resolution=grid, hi3d_space=space)
+        return refined
+
     def generate(self, prompt, image, params: GenParams, progress: ProgressFn = lambda *a: None):
         ok, reason = self.available()
         if not ok:
             raise ProviderError(reason)
-        import torch
-
         key = params.model or self.settings.local_shape_model
+        if key not in LOCAL_MODELS:
+            raise ProviderError(f"Modello locale sconosciuto: {key}")
+        meta: dict[str, Any] = {"up": "y"}
         with self._lock:  # one generation at a time on the GPU
             if image is None:
                 if not prompt:
                     raise ProviderError("Scrivi un prompt o carica un'immagine.")
-                image = self._flux_image(prompt, params.seed, progress)
+                image = self._text_image(prompt, params.seed, progress)
+                params.extra["image_kind"] = "synthetic"  # FLUX made it
             progress("image", 1.0, "Immagine pronta")
+            if key == "idol":
+                mesh, meta = self._idol_mesh(image, params, progress)
+                progress("shape", 1.0, "Forma 3D pronta")
+                return GenerationResult(mesh=mesh, image=image, model=key, meta=meta)
+            import torch
+
             progress("shape", 0.05, "Carico il modello 3D")
             pipe = self._load_shape(key)
             progress("shape", 0.2, "Genero la forma")
@@ -272,7 +380,7 @@ class LocalProvider(Provider):
                 torch.manual_seed(int(params.seed))
                 meshes, (_, _, res) = pipe.run(processed, **kwargs)
                 progress("shape", 0.85, "Estraggo la superficie")
-                mesh = self._to_glb_mesh(meshes[0], pipe, res, key == "pixal3d", params.quality)
+                mesh = self._to_glb_mesh(meshes[0], pipe, res, key == "pixal3d")
             else:
                 try:
                     from hy3dshape.rembg import BackgroundRemover  # type: ignore
@@ -287,4 +395,4 @@ class LocalProvider(Provider):
                 mesh = as_single_mesh(out[0])
             torch.cuda.empty_cache()
         progress("shape", 1.0, "Forma 3D pronta")
-        return GenerationResult(mesh=mesh, image=image, model=key, meta={"up": "y"})
+        return GenerationResult(mesh=mesh, image=image, model=key, meta=meta)

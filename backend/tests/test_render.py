@@ -7,6 +7,7 @@ from PIL import Image, ImageDraw, ImageFilter
 
 from app import render
 from app.pipeline import process
+from app.pipeline.refine import refine
 from app.providers.base import GenParams
 from app.providers.procedural import ProceduralProvider
 
@@ -50,6 +51,24 @@ def test_render_preview_draws_the_model_on_the_backdrop():
     big = np.asarray(render.render_preview(dense, size=384, max_faces=20_000))
     covered = lambda a: (np.abs(a.astype(int) - a[0, 0]).sum(axis=2) > 30).mean()  # noqa: E731
     assert covered(big) == pytest.approx(covered(img), abs=0.01)
+
+
+def test_a_print_of_millions_of_triangles_is_clustered_before_decimating(monkeypatch):
+    """Every print has 5M triangles: quadric decimation of all of them would take ~20 s per
+    thumbnail, so they are first clustered on a grid finer than the pixels."""
+    sphere = refine(trimesh.creation.icosphere(subdivisions=4, radius=20), 1_200_000)
+    clustered = []
+    real = render._clustered
+    monkeypatch.setattr(render, "_clustered", lambda *a: clustered.append(len(a[1])) or real(*a))
+    v, f = render._decimated(sphere, 40_000)
+    assert clustered == [len(sphere.faces)] and 0 < len(f) <= 40_000
+    np.testing.assert_allclose(v.min(axis=0), sphere.bounds[0], atol=0.5)  # same frame
+    np.testing.assert_allclose(v.max(axis=0), sphere.bounds[1], atol=0.5)
+    small = trimesh.creation.icosphere(subdivisions=4, radius=20)
+    covered = lambda a: (np.abs(a.astype(int) - a[0, 0]).sum(axis=2) > 30).mean()  # noqa: E731
+    big = np.asarray(render.render_preview(sphere, size=384))
+    assert covered(big) == pytest.approx(covered(np.asarray(render.render_preview(small, size=384))),
+                                         abs=0.01)
 
 
 def test_decimations_from_two_threads_keep_their_own_mesh():

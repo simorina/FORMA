@@ -1,4 +1,5 @@
 import io
+import json
 import struct
 import zipfile
 
@@ -6,7 +7,8 @@ import numpy as np
 import pytest
 import trimesh
 
-from app.exporters import export_mesh
+from app import exporters
+from app.exporters import ExportError, export_mesh, verify_export, write_export
 
 
 @pytest.fixture()
@@ -66,15 +68,32 @@ def test_obj_writes_vertex_colors(colored_cube):
     assert len(vertices) == 8
     for values in vertices:
         assert len(values) == 6
-        assert values[3:] == ["0.78431373", "0.11764706", "0.03921569"]
+        assert [float(x) for x in values[3:]] == pytest.approx([200 / 255, 30 / 255, 10 / 255], abs=1e-4)
 
 
-def test_glb_keeps_vertex_colors(colored_cube):
+def _glb_parts(data: bytes) -> tuple[dict, bytes]:
+    n = struct.unpack("<I", data[12:16])[0]
+    gltf = json.loads(data[20:20 + n])
+    return gltf, data[20 + n + 8:]
+
+
+def test_glb_keeps_vertex_colors_in_linear_light_as_gltf_asks(colored_cube):
+    """glTF reads COLOR_0 as linear: sRGB bytes there made Blender show a red as pale pink.
+    16 bits per channel, and back to sRGB they are the model's colours."""
     data, _, _ = export_mesh(colored_cube, "glb")
-    back = trimesh.load(io.BytesIO(data), file_type="glb", process=False)
-    mesh = next(iter(back.geometry.values()))
-    assert mesh.visual.kind == "vertex"
-    assert (np.asarray(mesh.visual.vertex_colors) == [200, 30, 10, 255]).all()
+    gltf, blob = _glb_parts(data)
+    prim = gltf["meshes"][0]["primitives"][0]
+    acc = gltf["accessors"][prim["attributes"]["COLOR_0"]]
+    assert (acc["componentType"], acc["type"], acc["normalized"]) == (5123, "VEC4", True)
+    view = gltf["bufferViews"][acc["bufferView"]]
+    rgba = np.frombuffer(blob, "<u2", acc["count"] * 4, view["byteOffset"]).reshape(-1, 4) / 65535.0
+    lin = rgba[:, :3]
+    srgb = np.where(lin <= 0.0031308, lin * 12.92, 1.055 * lin ** (1 / 2.4) - 0.055) * 255
+    assert np.abs(srgb - [200, 30, 10]).max() < 0.5 and (rgba[:, 3] == 1).all()
+    material = gltf["materials"][prim["material"]]["pbrMetallicRoughness"]
+    assert material["metallicFactor"] == 0  # the glTF default, with no material, is a metal
+    back = trimesh.load(io.BytesIO(data), file_type="glb", force="mesh", process=False)
+    assert len(back.faces) == 12
 
 
 @pytest.mark.parametrize("fmt", ["stl", "3mf"])
@@ -82,3 +101,71 @@ def test_stl_and_3mf_stay_plain_for_colored_meshes(colored_cube, fmt):
     data, _, ext = export_mesh(colored_cube, fmt)
     back = trimesh.load(io.BytesIO(data), file_type=ext, force="mesh")
     assert len(back.faces) == 12
+
+
+# -- every file is read back and checked before it is served ----------------------------------
+
+
+@pytest.mark.parametrize("fmt", ["stl", "3mf", "obj", "glb"])
+def test_every_format_is_written_whole_and_reads_back(colored_cube, fmt, tmp_path):
+    path = tmp_path / f"m.{fmt}"
+    writes, checks = [], []
+    write_export(colored_cube, fmt, path, writes.append, checks.append)
+    assert writes[-1] == pytest.approx(1.0) and checks[-1] == pytest.approx(1.0)
+    assert writes == sorted(writes)  # the bar only moves forward
+    back = trimesh.load(path, file_type=fmt, force="mesh", process=False)
+    assert len(back.faces) == 12
+
+
+def _break(path, how):
+    data = bytearray(path.read_bytes())
+    if how == "truncate":
+        data = data[: len(data) - 30]
+    elif how == "flip":
+        mid = len(data) // 2
+        data[mid] ^= 0xFF
+    path.write_bytes(bytes(data))
+
+
+@pytest.mark.parametrize(("fmt", "how", "why"), [
+    ("stl", "truncate", "triangoli"),
+    ("obj", "truncate", "attesi"),
+    ("3mf", "flip", ""),
+    ("3mf", "truncate", ""),
+    ("glb", "truncate", ""),
+])
+def test_a_damaged_file_never_passes_the_check(cube, tmp_path, fmt, how, why):
+    path = tmp_path / f"m.{fmt}"
+    write_export(cube, fmt, path)
+    _break(path, how)
+    with pytest.raises(ExportError, match=why or "controllo"):
+        verify_export(path, fmt, cube)
+
+
+def test_a_file_of_another_model_never_passes_the_check(cube, tmp_path):
+    path = tmp_path / "m.obj"
+    write_export(cube, "obj", path)
+    bigger = trimesh.creation.icosphere(1)
+    with pytest.raises(ExportError, match="attesi"):
+        verify_export(path, "obj", bigger)
+
+
+def test_a_failed_check_leaves_no_file(cube, tmp_path, monkeypatch):
+    def broken(mesh, path, progress):
+        path.write_text("v 0 0 0" + chr(10))  # a writer that stops halfway
+    monkeypatch.setitem(exporters.WRITERS, "obj", broken)
+    path = tmp_path / "m.obj"
+    with pytest.raises(ExportError):
+        write_export(cube, "obj", path)
+    assert not path.exists()
+
+
+@pytest.mark.parametrize("fmt", ["obj", "3mf"])
+def test_lines_split_between_read_blocks_are_counted_once(fmt, tmp_path, monkeypatch):
+    """The check reads big files in blocks: a line cut by a block boundary must count once
+    (a 7-byte block cuts almost every line)."""
+    sphere = trimesh.creation.icosphere(2)
+    path = tmp_path / f"m.{fmt}"
+    write_export(sphere, fmt, path)
+    monkeypatch.setattr(exporters, "BLOCK", 7)
+    verify_export(path, fmt, sphere)

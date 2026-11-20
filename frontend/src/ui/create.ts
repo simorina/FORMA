@@ -1,6 +1,6 @@
-/** Left panel: the prompt, examples, a photo, the 3D model to use; and the history tab. */
-import type { App, AppState } from '../app';
-import { MESH_EXTENSIONS, type ModelInfo, type ProviderInfo, type Quality } from '../lib/api';
+/** Left panel: the prompt or a picture, examples, a mesh to repair, the 3D model to use; and the history tab. */
+import type { App, AppState, Source } from '../app';
+import { type ImageKind, type ImageRoute, MESH_EXTENSIONS, type ModelInfo, type ProviderInfo, type Quality, type ReliefOptions, routeKey } from '../lib/api';
 import { attr, h, prop, render } from '../lib/dom';
 import { ago, dims, grams, title } from '../lib/format';
 import { icon } from '../lib/icons';
@@ -17,7 +17,49 @@ export const EXAMPLES = [
   'Tazza da caffè con manico ad anello',
 ];
 
-const PROVIDER_SHORT: Record<string, string> = { hf_remote: 'Remoto', local: 'GPU locale', procedural: 'Offline' };
+const PROVIDER_SHORT: Record<string, string> = { hf_remote: 'Remoto', local: 'GPU locale', meshy: 'Meshy', procedural: 'Offline' };
+const SOURCES: { key: Source; label: string }[] = [
+  { key: 'text', label: 'Testo' },
+  { key: 'image', label: 'Immagine' },
+  { key: 'relief', label: 'Rilievo' },
+];
+type Opt<T extends string> = { key: T; label: string; title?: string };
+const RELIEF_VARIANTS: Opt<ReliefOptions['variant']>[] = [
+  { key: 'high', label: 'Alto', title: 'Rilievo profondo, per la stampa 3D (6 mm se non scegli tu)' },
+  { key: 'low', label: 'Basso', title: 'Rilievo leggero, per targhe sottili, incisione laser e CNC (3 mm se non scegli tu)' },
+];
+const RELIEF_CARVING: Opt<ReliefOptions['carving_mode']>[] = [
+  { key: 'emboss', label: 'In rilievo', title: 'Le parti vicine della foto escono dalla lastra' },
+  { key: 'engrave', label: 'Inciso', title: 'Le parti vicine della foto sono scavate nella lastra' },
+];
+const RELIEF_BASE: Opt<'with' | 'without'>[] = [
+  { key: 'with', label: 'Con base' },
+  { key: 'without', label: 'Senza base', title: 'Lo sfondo viene tolto: resta solo il soggetto' },
+];
+const RELIEF_BEND: Opt<ReliefOptions['bend_mode']>[] = [
+  { key: 'off', label: 'Piatto' },
+  { key: 'convex', label: 'Convesso', title: 'La faccia si curva in fuori' },
+  { key: 'concave', label: 'Concavo', title: 'La faccia si curva in dentro' },
+];
+const RELIEF_AXIS: Opt<ReliefOptions['bend_axis']>[] = [
+  { key: 'xz', label: 'Ai lati', title: 'Si curvano i bordi destro e sinistro' },
+  { key: 'yz', label: 'Sopra e sotto', title: 'Si curvano i bordi in alto e in basso' },
+];
+const KINDS: { key: ImageKind; label: string; title: string }[] = [
+  { key: 'real', label: 'Foto', title: 'Una foto di un oggetto vero: Idol lascia più margine attorno' },
+  { key: 'synthetic', label: 'Render o AI', title: 'Un render o un’immagine generata: Idol inquadra più stretto' },
+];
+/** Where each provider runs a picture, and what it costs. */
+const ROUTE_WHERE: Record<string, { where: string; cost: string }> = {
+  local: { where: 'GPU locale', cost: 'Sulla tua GPU: nessuna coda e nessuna quota.' },
+  hf_remote: { where: 'Hugging Face', cost: 'Sullo Space col tuo token: usa quota GPU, con la coda qualche minuto. Se non risponde te lo dico: nessun ripiego su altri modelli.' },
+  meshy: { where: 'Meshy', cost: 'Sul cloud di Meshy con la tua chiave: 30–35 crediti a modello, circa 2–4 minuti. Se non risponde te lo dico: nessun ripiego.' },
+};
+/** Words of our own for the two models most used with pictures. */
+const ROUTE_TEXT: Record<string, string> = {
+  'local:idol': 'Sulla tua GPU: nessuna coda e nessuna quota, circa 2 minuti, con i colori. Con Hi3D anche il dettaglio fine.',
+  'hf_remote:trellis2': 'Microsoft, sullo Space col tuo token: forma su una griglia fino a 1536³ (qualità Alta), colori dalla texture. Usa quota GPU; con la coda 2–5 minuti. Se lo Space non risponde te lo dico: nessun ripiego.',
+};
 const QUALITIES: { key: Quality; label: string }[] = [
   { key: 'draft', label: 'Bozza' },
   { key: 'standard', label: 'Standard' },
@@ -75,6 +117,67 @@ export function mountLeftPanel(root: HTMLElement, app: App): { focusPrompt(): vo
     h('span', { class: 'switch-text' }, h('span', null, 'Mostrami prima l’immagine'),
       h('span', { class: 'meta' }, 'La approvi, poi parte il 3D: risparmi quota GPU')),
     review);
+  // Meshy in place of the switch: as on meshy.ai, the prompt goes straight to its Text to 3D
+  const meshyNote = h('p', { class: 'meta meshy-note' },
+    'Come su meshy.ai: il prompt va a Meshy così come lo scrivi, prima la forma e poi i colori.');
+
+  // -- or a picture, in the prompt's place --------------------------------------------------
+  const sourceSeg = h('div', { class: 'segmented source-seg', role: 'radiogroup', 'aria-label': 'Da dove parte il modello 3D' });
+  const imageInput = h('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp', class: 'visually-hidden', tabindex: '-1', 'aria-hidden': 'true' }) as HTMLInputElement;
+  imageInput.addEventListener('change', () => {
+    const f = imageInput.files?.[0];
+    if (f) app.takeFile(f, { quiet: true });
+    imageInput.value = ''; // the same file again must fire change again
+  });
+  // dropping a picture here, or anywhere in the window, goes through the overlay in main.ts
+  const imageBox = h('div', { class: 'image-box', role: 'button', tabindex: 0, 'aria-describedby': 'image-limits' });
+  imageBox.addEventListener('click', () => imageInput.click());
+  imageBox.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      imageInput.click();
+    }
+  });
+  const imageChip = h('div', { class: 'image-chip' });
+  const kindSeg = h('div', { class: 'segmented kind-seg', role: 'radiogroup', 'aria-label': 'Che immagine è' });
+  const kindRow = h('div', { class: 'field-inline kind-row' }, h('span', { class: 'label' }, 'È una'), kindSeg);
+  const refine = h('input', { type: 'checkbox', class: 'switch', role: 'switch', 'aria-label': 'Rifinisci con Hi3D' }) as HTMLInputElement;
+  refine.addEventListener('change', () => app.setRefine(refine.checked));
+  const refineNote = h('span', { class: 'meta' });
+  const refineRow = h('label', { class: 'switch-row refine-row' },
+    h('span', { class: 'switch-text' }, h('span', null, 'Rifinisci con Hi3D'), refineNote), refine);
+  const imageLimits = h('p', { id: 'image-limits', class: 'meta' },
+    'PNG, JPG o WEBP. Un oggetto solo e intero, su uno sfondo semplice: lo sfondo lo tolgo io.');
+  // -- a bas-relief of the picture (Meshy Relief) ------------------------------------------
+  const variantSeg = h('div', { class: 'segmented', role: 'radiogroup', 'aria-label': 'Stile del rilievo' });
+  const carvingSeg = h('div', { class: 'segmented', role: 'radiogroup', 'aria-label': 'Effetto' });
+  const baseSeg = h('div', { class: 'segmented', role: 'radiogroup', 'aria-label': 'Base' });
+  const bendSeg = h('div', { class: 'segmented', role: 'radiogroup', 'aria-label': 'Curvatura' });
+  const axisSeg = h('div', { class: 'segmented', role: 'radiogroup', 'aria-label': 'Asse della curvatura' });
+  const numberInput = (label: string, min: number, max: number, step: number, set: (v: number | null) => void) => {
+    const input = h('input', { type: 'number', class: 'num-input num', min, max, step, inputmode: 'decimal', 'aria-label': label }) as HTMLInputElement;
+    input.addEventListener('change', () => {
+      const raw = input.value.trim();
+      const v = raw === '' ? null : Math.min(max, Math.max(min, Number(raw.replace(',', '.'))));
+      set(v === null || Number.isFinite(v) ? v : null);
+    });
+    return input;
+  };
+  const depthInput = numberInput('Profondità in millimetri (vuoto: automatica)', 0, 60, 0.5, (v) => app.setRelief({ carving_depth_mm: v }));
+  const baseInput = numberInput('Spessore della base in millimetri', 0.1, 10, 0.1, (v) => app.setRelief({ base_thickness_mm: v ?? 1 }));
+  const angleInput = numberInput('Angolo della curvatura in gradi', 0, 360, 5, (v) => app.setRelief({ bend_angle: v ?? 60 }));
+  const unit = (input: HTMLElement, u: string) => h('span', { class: 'with-unit' }, input, h('span', { class: 'meta' }, u));
+  const row = (label: string, ...control: HTMLElement[]) => h('div', { class: 'field-inline relief-row' }, h('span', { class: 'label' }, label), ...control);
+  // a row of buttons goes under its label, the width of the panel: side by side they would not fit
+  const stack = (label: string, control: HTMLElement) => h('div', { class: 'relief-row relief-stack' }, h('span', { class: 'label' }, label), control);
+  const baseThickRow = row('Spessore', unit(baseInput, 'mm'));
+  const angleRow = row('Angolo', unit(angleInput, '°'));
+  const axisRow = stack('Asse', axisSeg);
+  const reliefNote = h('p', { class: 'meta relief-note' });
+  const reliefFields = h('div', { class: 'relief-fields' },
+    stack('Rilievo', variantSeg), stack('Effetto', carvingSeg), row('Profondità', unit(depthInput, 'mm')),
+    stack('Base', baseSeg), baseThickRow, stack('Curvatura', bendSeg), angleRow, axisRow, reliefNote);
+  const imageField = h('div', { class: 'image-field' }, imageBox, imageChip, kindRow, refineRow, reliefFields, imageLimits, imageInput);
 
   // -- examples --------------------------------------------------------------------------
   const examples = h(
@@ -86,6 +189,7 @@ export function mountLeftPanel(root: HTMLElement, app: App): { focusPrompt(): vo
         onclick: () => {
           prompt.value = text;
           app.store.set({ prompt: text });
+          app.setSource('text'); // an example is words: back to the prompt
           prompt.focus();
           inscribe();
         },
@@ -93,8 +197,8 @@ export function mountLeftPanel(root: HTMLElement, app: App): { focusPrompt(): vo
     ),
   );
 
-  // -- photo or mesh ----------------------------------------------------------------------
-  const accept = ['image/png', 'image/jpeg', 'image/webp', ...MESH_EXTENSIONS.map((e) => `.${e}`)].join(',');
+  // -- a mesh to repair (a picture dropped here still goes to the picture box) ----------------
+  const accept = [...MESH_EXTENSIONS.map((e) => `.${e}`), 'image/png', 'image/jpeg', 'image/webp'].join(',');
   const file = h('input', { type: 'file', accept, class: 'visually-hidden', tabindex: '-1', 'aria-hidden': 'true' }) as HTMLInputElement;
   const take = (f: File | undefined | null) => {
     if (f) app.takeFile(f, { quiet: true });
@@ -105,9 +209,9 @@ export function mountLeftPanel(root: HTMLElement, app: App): { focusPrompt(): vo
   });
   const drop = h(
     'div',
-    { class: 'drop', role: 'button', tabindex: 0, 'aria-describedby': 'photo-limits', 'aria-label': 'Scegli una foto o una mesh' },
-    icon('image'),
-    h('span', null, 'Trascina una foto o una mesh, o ', h('span', { class: 'link' }, 'scegli un file')),
+    { class: 'drop', role: 'button', tabindex: 0, 'aria-describedby': 'photo-limits', 'aria-label': 'Scegli una mesh da riparare' },
+    icon('cube'),
+    h('span', null, 'Trascina una mesh, o ', h('span', { class: 'link' }, 'scegli un file')),
   );
   drop.addEventListener('click', () => file.click());
   drop.addEventListener('keydown', (e) => {
@@ -117,15 +221,18 @@ export function mountLeftPanel(root: HTMLElement, app: App): { focusPrompt(): vo
     }
   });
   // dropping a file here, or anywhere in the window, goes through the overlay in main.ts
-  const photo = h('div', { class: 'photo' });
   const photoLimits = h('p', { id: 'photo-limits', class: 'meta' },
-    'Foto PNG, JPG o WEBP: un oggetto solo, su sfondo semplice. Mesh STL, OBJ, 3MF, GLB o PLY: la riparo e la preparo per la stampa. Fino a 256 MB.');
+    'STL, OBJ, 3MF, GLB o PLY, fino a 512 MB: la chiudo, la riparo e la preparo per la stampa.');
 
   // -- model -----------------------------------------------------------------------------
   const providerSeg = h('div', { class: 'segmented', role: 'radiogroup', 'aria-label': 'Dove generare' });
   const providerNote = h('p', { class: 'meta provider-note' });
   const models = h('div', { class: 'models', role: 'radiogroup', 'aria-label': 'Modello immagine→3D' });
   const qualitySeg = h('div', { class: 'segmented', role: 'radiogroup', 'aria-label': 'Qualità' });
+  // From a picture: Idol on this GPU or TRELLIS.2 on its Space (the backend's IMAGE_TO_3D)
+  const imageRoute = h('div', { class: 'image-route', role: 'radiogroup', 'aria-label': 'Modello per le immagini' });
+  // From a picture, as a relief: only Meshy Relief, drawn as the chosen model
+  const reliefCard = h('div', { class: 'image-route' });
 
   const viewCreate = h(
     'div',
@@ -133,18 +240,20 @@ export function mountLeftPanel(root: HTMLElement, app: App): { focusPrompt(): vo
     h('section', { class: 'block block-prompt' },
       h('p', { class: 'kicker', 'aria-hidden': 'true' }, 'Su misura'),
       h('label', { class: 'prompt-label', for: 'prompt' }, 'Cosa vuoi ', h('em', null, 'stampare?')),
+      sourceSeg,
       promptField,
+      imageField,
       h('div', { class: 'prompt-foot' }, hint, generate),
-      reviewRow),
+      reviewRow, meshyNote),
     h('section', { class: 'block block-examples' },
       h('h2', { class: 'label' }, 'Ispirazioni'),
       examples),
     h('section', { class: 'block block-upload' },
-      h('h2', { class: 'label' }, 'Da una foto o da una mesh'),
-      drop, photo, photoLimits, file),
+      h('h2', { class: 'label' }, 'Ripara una mesh'),
+      drop, photoLimits, file),
     h('section', { class: 'block block-model' },
       h('h2', { class: 'label' }, 'Modello 3D'),
-      providerSeg, providerNote, models,
+      providerSeg, providerNote, models, imageRoute, reliefCard,
       h('div', { class: 'field-inline' }, h('span', { class: 'label' }, 'Qualità'), qualitySeg)),
   );
 
@@ -166,7 +275,17 @@ export function mountLeftPanel(root: HTMLElement, app: App): { focusPrompt(): vo
   // -- rendering -------------------------------------------------------------------------
   // the choices stay in place (only their marks move) and the ink glides between them
   const provider = segmented(providerSeg, (v) => app.setProvider(v));
+  const source = segmented<Source>(sourceSeg, (v) => {
+    app.setSource(v);
+    if (v === 'text') prompt.focus();
+  });
+  const kind = segmented<ImageKind>(kindSeg, (v) => app.setImageKind(v));
   const quality = segmented<Quality>(qualitySeg, (q) => app.setQuality(q));
+  const variant = segmented<ReliefOptions['variant']>(variantSeg, (v) => app.setRelief({ variant: v }));
+  const carving = segmented<ReliefOptions['carving_mode']>(carvingSeg, (v) => app.setRelief({ carving_mode: v }));
+  const base = segmented<'with' | 'without'>(baseSeg, (v) => app.setRelief({ remove_base: v === 'without' }));
+  const bend = segmented<ReliefOptions['bend_mode']>(bendSeg, (v) => app.setRelief({ bend_mode: v }));
+  const axis = segmented<ReliefOptions['bend_axis']>(axisSeg, (v) => app.setRelief({ bend_axis: v }));
   const tabLine = glide(tabs, '.tab[aria-selected="true"]', 'line');
 
   const modelRow = (m: ModelInfo, selected: boolean) =>
@@ -290,18 +409,104 @@ export function mountLeftPanel(root: HTMLElement, app: App): { focusPrompt(): vo
     prop(generate, 'disabled', working || !!s.offline);
     prop(generate, 'textContent', working ? 'In corso…' : s.current ? 'Genera di nuovo' : 'Genera');
     prop(review, 'checked', s.reviewImage);
-    prop(reviewRow, 'hidden', !!s.image); // a photo is already the image
-    prop(prompt, 'placeholder', s.image ? 'Facoltativo: descrivi la foto' : 'Un vaso a spirale con il collo stretto');
+    const fromImage = s.source === 'image';
+    const asRelief = s.source === 'relief';
+    const fromPicture = fromImage || asRelief;
+    const meshy = s.provider === 'meshy';
+    prop(reviewRow, 'hidden', fromPicture || meshy); // a picture is already the image
+    prop(meshyNote, 'hidden', fromPicture || !meshy);
+    prop(hint, 'textContent', asRelief ? 'Il rilievo parte dalla foto' : fromImage ? 'Il modello 3D parte dall’immagine' : 'Invio per generare');
+    if (!prev || prev.source !== s.source) {
+      source(SOURCES, s.source, live);
+      const wasPicture = !!prev && prev.source !== 'text';
+      prop(promptField, 'hidden', fromPicture);
+      prop(imageField, 'hidden', !fromPicture);
+      // the field that comes in rises in the place of the other
+      if (live && fromPicture !== wasPicture) void enter.rise(fromPicture ? imageField : promptField, 0, 8, DUR.base);
+      if (live && asRelief) void enter.rise(reliefFields, 0, 8, DUR.base);
+    }
+    if (!prev || prev.imageKind !== s.imageKind) kind(KINDS, s.imageKind, live);
+    const routes = app.imageRoutes(s);
+    const route = app.imageRoute(s);
+    // only Idol frames a photo and a render differently, and only its shape goes to Hi3D
+    prop(kindRow, 'hidden', asRelief || route?.model !== 'idol');
+    prop(refineRow, 'hidden', asRelief || route?.model !== 'idol');
+    prop(reliefFields, 'hidden', !asRelief);
+    if (asRelief) {
+      const r = s.relief;
+      variant(RELIEF_VARIANTS, r.variant, live);
+      carving(RELIEF_CARVING, r.carving_mode, live);
+      base(RELIEF_BASE, r.remove_base ? 'without' : 'with', live);
+      bend(RELIEF_BEND, r.bend_mode, live);
+      axis(RELIEF_AXIS, r.bend_axis, live);
+      if (document.activeElement !== depthInput) prop(depthInput, 'value', r.carving_depth_mm === null ? '' : String(r.carving_depth_mm));
+      prop(depthInput, 'placeholder', `auto · ${r.variant === 'high' ? 6 : 3}`);
+      if (document.activeElement !== baseInput) prop(baseInput, 'value', String(r.base_thickness_mm));
+      if (document.activeElement !== angleInput) prop(angleInput, 'value', String(r.bend_angle));
+      prop(baseThickRow, 'hidden', r.remove_base);
+      prop(angleRow, 'hidden', r.bend_mode === 'off');
+      prop(axisRow, 'hidden', r.bend_mode === 'off');
+      const size = Math.min(250, Math.max(20, s.settings.target_size_mm));
+      const points = s.quality === 'high' ? 2048 : s.quality === 'draft' ? 512 : 1024;
+      prop(reliefNote, 'textContent', `Lato lungo ${size.toLocaleString('it-IT')} mm (da Dimensioni, 20–250), ${points} punti per lato in qualità ${s.quality === 'high' ? 'Alta' : s.quality === 'draft' ? 'Bozza' : 'Standard'}. Sdraiato sul piatto, faccia in su.`);
+    }
+    prop(refine, 'checked', s.refine);
+    const grid = s.quality === 'high' ? '1536³' : s.quality === 'draft' ? '512³' : '1024³';
+    const minutes = s.quality === 'high' ? 'circa 8' : s.quality === 'draft' ? 'circa 1' : 'circa 4';
+    prop(refineNote, 'textContent', s.refine
+      ? `Dopo Idol, la geometria passa a Hi3D sullo Space Hugging Face, col tuo token: dettaglio a ${grid}, ${minutes} minuti di quota GPU. Se non risponde, resta la forma di Idol.`
+      : 'Solo Idol, tutto sulla tua GPU.');
+    // from a picture: the models the backend allows for pictures replace the provider lists
+    for (const el of [providerSeg, providerNote, models]) prop(el, 'hidden', fromPicture);
+    prop(imageRoute, 'hidden', !fromImage);
+    prop(reliefCard, 'hidden', !asRelief);
+    if (asRelief && (!prev || prev.providers !== s.providers || prev.source !== s.source)) {
+      const meshy = s.providers?.providers.find((p) => p.name === 'meshy');
+      const ok = !!meshy?.available;
+      render(reliefCard, h('div', { class: 'model image-route-card', 'aria-current': 'true' },
+        h('span', { class: 'model-top' }, h('span', { class: 'model-name' }, 'Meshy Relief'),
+          ok ? h('span', { class: 'model-license' }, 'Meshy') : h('span', { class: 'pill pill-negative' }, 'Non disponibile')),
+        h('span', { class: 'model-desc' }, 'Da una foto un bassorilievo pronto da stampare, in millimetri: lastra con il soggetto in rilievo o inciso, anche curva. 20 crediti Meshy, circa 1–2 minuti.'),
+        ok ? null : h('span', { class: 'model-note is-warning' }, meshy?.reason || 'Meshy non è configurato.')));
+    }
+    if (!prev || prev.providers !== s.providers || prev.source !== s.source || prev.imageModel !== s.imageModel) {
+      const card = (r: ImageRoute) => {
+        const key = routeKey(r);
+        const chosen = route !== undefined && key === routeKey(route);
+        const where = ROUTE_WHERE[r.provider];
+        const tag = !r.available ? h('span', { class: 'pill pill-negative' }, 'Non disponibile')
+          : r.eu_restricted ? h('span', { class: 'pill pill-negative' }, 'Non valido in UE')
+            : h('span', { class: 'model-license' }, where?.where ?? r.provider);
+        const text = ROUTE_TEXT[key] ?? [r.description, where?.cost].filter(Boolean).join(' ');
+        return h('button', {
+          class: 'model image-route-card', type: 'button', role: 'radio', 'aria-checked': String(chosen),
+          'data-route': key, onclick: () => app.setImageModel(key),
+        },
+        h('span', { class: 'model-top' }, h('span', { class: 'model-name' }, r.label), tag),
+        chosen ? h('span', { class: 'model-desc' }, text || `Il modello 3D lo fa ${r.label}.`) : null,
+        chosen && !r.available ? h('span', { class: 'model-note is-warning' }, r.reason) : null,
+        chosen && r.eu_restricted ? (r.notes ?? []).map((n) => h('span', { class: 'model-note is-warning' }, n)) : null);
+      };
+      render(imageRoute, routes.length ? routes.map(card) : h('p', { class: 'meta' }, 'Carico i modelli…'));
+      if (live && fromImage && prev?.source !== s.source) void stagger(imageRoute.children, (el, d) => enter.rise(el, d, 8, DUR.base), 35, 2);
+    }
 
     if (!prev || prev.imageUrl !== s.imageUrl) {
-      prop(drop, 'hidden', !!s.image);
-      render(photo, s.image && s.imageUrl
+      imageBox.classList.toggle('has-image', !!s.image);
+      attr(imageBox, 'aria-label', s.image ? `Cambia l’immagine (${s.image.name})` : 'Scegli l’immagine da cui fare il modello 3D');
+      render(imageBox, s.image && s.imageUrl
+        ? h('img', { class: 'image-preview', src: s.imageUrl, alt: 'Immagine scelta' })
+        : [icon('image'),
+          h('span', { class: 'image-box-text' },
+            h('span', { class: 'image-box-title' }, 'Trascina qui un’immagine'),
+            h('span', { class: 'meta' }, 'o ', h('span', { class: 'link' }, 'scegli un file'), ', o incollala'))]);
+      render(imageChip, s.image
         ? h('div', { class: 'photo-chip' },
-          h('img', { src: s.imageUrl, alt: 'Foto scelta', width: 56, height: 56 }),
           h('span', { class: 'photo-name' }, s.image.name),
-          h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Togli la foto', onclick: () => { app.setImage(null); file.value = ''; } }, icon('close')))
+          h('button', { class: 'btn btn-ghost image-change', type: 'button', onclick: () => imageInput.click() }, 'Cambia'),
+          h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Togli l’immagine', onclick: () => app.setImage(null) }, icon('close')))
         : null);
-      if (live && photo.firstElementChild) void enter.rise(photo.firstElementChild, 0, 8, DUR.base);
+      if (live && s.image && imageBox.firstElementChild) void enter.rise(imageBox.firstElementChild, 0, 8, DUR.base);
     }
 
     if (!prev || prev.providers !== s.providers || prev.provider !== s.provider || prev.modelKey !== s.modelKey || prev.offline !== s.offline) {

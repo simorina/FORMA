@@ -34,6 +34,9 @@ const FORMATS: { key: ExportFormat; label: string; note: string }[] = [
 ];
 // a model with its own colours: OBJ carries them, and Bambu Studio maps them to the AMS
 const OBJ_COLOR_NOTE = 'millimetri, con i colori: Bambu Studio li abbina all’AMS';
+// the GLB carries them too, but Blender opens it in Solid view, one grey for the whole material
+const GLB_COLOR_NOTE = 'metri, Y in alto, con i colori: in Blender si vedono in Material Preview (tasto Z)';
+const COLOR_NOTES: Partial<Record<ExportFormat, string>> = { obj: OBJ_COLOR_NOTE, glb: GLB_COLOR_NOTE };
 
 // -- the panels' motion ------------------------------------------------------------------------
 
@@ -275,6 +278,19 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
   // -- export ----------------------------------------------------------------------------
   const formats = h('div', { class: 'formats' });
   const fileName = h('p', { class: 'meta file-name' });
+  // Blender on this computer: the GLB opened there, framed and with its colours on
+  const blender = h('button', { class: 'btn btn-secondary blender-open', type: 'button', hidden: true },
+    'Apri in Blender') as HTMLButtonElement;
+  blender.addEventListener('click', async () => {
+    blender.disabled = true;
+    blender.textContent = 'Apro Blender…';
+    try {
+      await app.openInBlender();
+    } finally {
+      blender.disabled = false;
+      blender.textContent = 'Apri in Blender';
+    }
+  });
 
   // The report answers the screen's question (can I print it, and how much filament?): first.
   const printView = h('div', { class: 'view print-view' },
@@ -283,7 +299,7 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
       spool, kv, notes),
     h('section', { class: 'block block-export' },
       h('h2', { class: 'section-title' }, 'Esporta'),
-      formats, fileName),
+      formats, fileName, blender),
     h('section', { class: 'block block-printer' },
       h('h2', { class: 'section-title' }, 'Stampante e filamento'),
       h('label', { class: 'label', for: 'printer' }, 'Stampante'),
@@ -514,7 +530,10 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
       });
     });
     const fb = c.gen_meta?.fallback_from;
-    notesView([r.warnings.join('\n'), r.repairs.join('\n'), r.process_ms, fb, c.model, s.infill], () => {
+    const hi3d = c.gen_meta?.refine === 'hi3d' ? Number(c.gen_meta.hi3d_resolution) : 0;
+    const hi3dError = c.gen_meta?.hi3d_error;
+    const meshyCredits = c.gen_meta?.meshy_credits;
+    notesView([r.warnings.join('\n'), r.repairs.join('\n'), r.process_ms, fb, c.model, s.infill, hi3d, hi3dError, meshyCredits], () => {
       const warn = r.warnings.map((w) => h('p', { class: 'note note-warning' }, icon('alert'), w));
       const repairs = r.repairs.length
         ? h('details', { class: 'repairs' },
@@ -522,24 +541,36 @@ export function mountRightPanel(root: HTMLElement, app: App): void {
           h('ul', null, r.repairs.map((x) => h('li', null, x))))
         : h('p', { class: 'meta' }, `Nessuna riparazione necessaria · ${num(r.process_ms / 1000, 1)} s`);
       const time = h('p', { class: 'meta' }, `Tempo e costo sono stime (profilo standard da 0,2 mm, ${Math.round(s.infill * 100)}% di riempimento): lo slicer ti darà quelli esatti.`);
-      render(notes, warn, fb ? h('p', { class: 'note' }, `Generato con ${c.model}: ${fb} non era disponibile.`) : null, repairs, time);
+      const made = hi3d
+        ? h('p', { class: 'note' }, `Forma di Idol rifinita da Hi3D a ${hi3d}³, colori di Idol.`)
+        : hi3dError ? h('p', { class: 'note' }, `Forma di Idol senza rifinitura: ${hi3dError}`)
+          : meshyCredits ? h('p', { class: 'note' }, `Generato con Meshy: ${meshyCredits} crediti.`) : null;
+      render(notes, warn, fb ? h('p', { class: 'note' }, `Generato con ${c.model}: ${fb} non era disponibile.`) : null, made, repairs, time);
       if (live && fresh) void stagger(notes.children, (el, d) => enter.fade(el, d, DUR.base), 50, 4, 420);
     });
     const colored = !!c.has_colors;
     const best: ExportFormat = colored ? 'obj' : '3mf';
+    prop(blender, 'hidden', !s.providers?.blender);
+    prop(blender, 'title', colored
+      ? 'Apre Blender su questo computer con il modello già a colori e inquadrato'
+      : 'Apre Blender su questo computer con il modello inquadrato');
     formatsView([...FORMATS.map((f) => c.urls.export[f.key]), best], () => {
-      render(formats, FORMATS.map((f) => h('a', {
-        class: f.key === best ? 'btn btn-secondary is-recommended' : 'btn btn-secondary',
-        href: c.urls.export[f.key], download: '', title: colored && f.key === 'obj' ? OBJ_COLOR_NOTE : f.note,
+      render(formats, FORMATS.map((f) => h('button', {
+        class: f.key === best ? 'btn btn-secondary is-recommended' : 'btn btn-secondary', type: 'button',
+        'data-format': f.key, title: (colored && COLOR_NOTES[f.key]) || f.note,
+        onclick: () => app.download(f.key), // prepared, checked and fetched in the download popup
       }, f.label)));
       // uncovered from the left: clip only, the links never move under the pointer
       if (live && fresh) void enter.wipe(formats, 0, 'left', DUR.base);
     });
     const slug = exportName(c, best);
-    fileView([slug, best], () => {
+    const inBlender = !!s.providers?.blender;
+    fileView([slug, best, inBlender], () => {
       const slugEl = h('span', { class: 'file-slug' }, slug);
       fileName.replaceChildren(slugEl, h('span', null, colored
-        ? 'Con i colori: OBJ. In Bambu Studio scegli quanti colori usare e lo slot AMS di ciascuno.'
+        ? 'Con i colori: OBJ. In Bambu Studio scegli quanti colori usare e lo slot AMS di ciascuno. '
+          + (inBlender ? 'Per Blender: «Apri in Blender» lo apre già a colori.'
+            : 'Anche il GLB ha i colori: in Blender passa alla vista Material Preview (tasto Z).')
         : '3MF consigliato: conserva i millimetri nello slicer.'));
       if (live) void swap(slugEl, fresh ? 160 : 0);
     });

@@ -250,12 +250,11 @@ const step = async (name, fn) => {
   });
 
   await step('any mesh file is repaired and prepared as a new model', async () => {
-    const href = await page.getAttribute('.btn-download', 'href');
-    const stl = await page.evaluate(async (u) => {
-      const id = u.split('/').pop().split('?')[0];
-      const r = await fetch(`/api/export/${id}?format=stl`);
+    const stl = await page.evaluate(async () => {
+      const { models } = await (await fetch('/api/models')).json();
+      const r = await fetch(`/api/export/${models[0].id}?format=stl`);
       return Array.from(new Uint8Array(await r.arrayBuffer()));
-    }, href);
+    });
     const file = path.join(tmp, 'pezzo-da-riparare.stl');
     fs.writeFileSync(file, Buffer.from(stl));
     await arm();
@@ -282,12 +281,20 @@ const step = async (name, fn) => {
     assert.equal(await page.evaluate(() => document.activeElement?.id), 'prompt');
   });
 
-  await step('download link serves a 3MF with a meaningful name', async () => {
-    const href = await page.getAttribute('.btn-download', 'href');
-    const res = await page.evaluate(async (u) => { const r = await fetch(u); return { s: r.status, cd: r.headers.get('content-disposition'), n: (await r.arrayBuffer()).byteLength }; }, href);
-    assert.equal(res.s, 200);
-    assert.match(res.cd, /attachment; filename="[a-z0-9-]+-\d+mm\.3mf"/);
-    assert.ok(res.n > 1000);
+  await step('Scarica 3MF: a popup follows conversion, check and download to the last byte', async () => {
+    const saving = page.waitForEvent('download');
+    await page.click('.btn-download');
+    await page.waitForSelector('.download-scrim:not([hidden]) .download-bar');
+    const file = await saving;
+    assert.match(file.suggestedFilename(), /^[a-z0-9-]+-\d+mm\.3mf$/);
+    const saved = path.join(tmp, file.suggestedFilename());
+    await file.saveAs(saved);
+    assert.ok(fs.statSync(saved).size > 1000);
+    await page.waitForSelector('.download-dialog.is-done');
+    assert.match(await text('.download-status'), /Scaricato e verificato/);
+    assert.equal(await page.getAttribute('.download-bar', 'aria-valuenow'), '100');
+    await page.click('.download-dialog .download-actions .btn:not([hidden])'); // Chiudi
+    assert.equal(await page.isVisible('.download-scrim'), false);
   });
 
   await step('rename from the top bar: Enter saves and names the files, Esc cancels', async () => {
@@ -371,8 +378,12 @@ const step = async (name, fn) => {
       document.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true }));
     });
     await page.waitForSelector('.photo-chip');
-    assert.match(await text('.toasts'), /Foto pronta/);
+    assert.match(await text('.toasts'), /Immagine pronta/);
+    assert.equal(await page.isVisible('#prompt'), false); // the picture box took the prompt's place
     await page.click('.photo-chip .icon-btn');
+    assert.equal(await page.isVisible('.image-box:not(.has-image)'), true); // waits for another
+    await page.click('.source-seg .seg[data-key="text"]');
+    assert.equal(await page.isVisible('#prompt'), true);
     await arm();
     await page.evaluate(async () => {
       const { models } = await (await fetch('/api/models')).json();
@@ -421,15 +432,16 @@ const step = async (name, fn) => {
     const png = path.join(tmp, 'foto.png');
     fs.writeFileSync(png, Buffer.from(thumb));
     await page.setInputFiles('input[type="file"]', png);
-    await page.waitForSelector('.photo-chip');
+    await page.waitForSelector('.image-box.has-image .image-preview');
     await arm();
-    await page.fill('#prompt', '');
     await page.click('.prompt-foot .btn');
     await waitDone();
     const models = await page.evaluate(async () => (await (await fetch('/api/models')).json()).models);
     assert.equal(models[0].kind, 'image');
+    assert.match(models[0].prompt, /foto/); // named after the file
     await page.click('.photo-chip .icon-btn');
     assert.equal(await page.isVisible('.photo-chip'), false);
+    await page.click('.source-seg .seg[data-key="text"]');
   });
 
   await step('a failed job shows the error in the panel with Riprova', async () => {

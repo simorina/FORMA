@@ -164,8 +164,9 @@ class HFRemoteProvider(Provider):
                 mesh, space = self._shape(key, img_path, params, progress)
             except ProviderError as exc:
                 fallback = self.settings.hf_fallback_model
+                # an uploaded picture goes to the model chosen for it, or nowhere
                 if (exc.kind == "auth" or not fallback or fallback == key
-                        or fallback not in SHAPE_ENDPOINTS):
+                        or fallback not in SHAPE_ENDPOINTS or params.extra.get("no_fallback")):
                     raise
                 first = SHAPE_ENDPOINTS[key].label
                 second = SHAPE_ENDPOINTS[fallback].label

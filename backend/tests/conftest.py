@@ -10,9 +10,18 @@ from app.config import Settings, set_settings
 from app.providers import reset_providers
 
 
+@pytest.fixture(autouse=True)
+def few_triangles(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every print has at least 5M triangles (pipeline.process.MIN_FACES): the tests prepare
+    small meshes without topping them up, except those that delete this to check the minimum."""
+    monkeypatch.setenv("FORMA_MIN_FACES", "0")
+
+
 @pytest.fixture()
 def settings(tmp_path: Path) -> Settings:
-    s = Settings(gen_provider="procedural", data_dir=tmp_path / "data", cors_origins=["*"])
+    # pictures go to the offline shapes here (the app sends them only to Idol: test_idol.py)
+    s = Settings(gen_provider="procedural", data_dir=tmp_path / "data", cors_origins=["*"],
+                 image_to_3d="procedural:")
     set_settings(s)
     reset_providers()
     yield s

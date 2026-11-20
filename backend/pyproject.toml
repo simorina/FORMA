@@ -37,6 +37,30 @@ gpu = [
     "sentencepiece>=0.2",
     "rembg>=2.0.57",
 ]
+# Idol (speridlabs/idol, Apache-2.0) on this machine's NVIDIA GPU, Windows included: one image
+# to 3D Gaussians, then a solid mesh (providers/idol.py). ~7 GB of VRAM. `make install-idol`.
+idol = [
+    "idol",
+    "torch>=2.5",
+    "torchvision>=0.20",
+    "transformers>=4.56",
+    "diffusers>=0.36",
+    "tensordict>=0.8",
+    "plyfile>=1.0",
+    "safetensors>=0.4",
+]
+
+[tool.uv.sources]
+idol = { git = "https://github.com/speridlabs/idol-sdk", rev = "4702a7f00850e34b6e83a2170cc123c3e9570744" }
+# On Windows PyPI only has CPU builds of PyTorch: the CUDA ones come from PyTorch's own index
+# (CUDA 13.2, any recent NVIDIA driver). Linux (CUDA builds on PyPI) and macOS keep PyPI.
+torch = [{ index = "pytorch-cu132", marker = "sys_platform == 'win32'" }]
+torchvision = [{ index = "pytorch-cu132", marker = "sys_platform == 'win32'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
+explicit = true
 
 [dependency-groups]
 dev = [

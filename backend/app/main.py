@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import os
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -16,24 +17,29 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, UnidentifiedImageError
+from starlette.background import BackgroundTask
 from starlette.middleware.gzip import DEFAULT_EXCLUDED_CONTENT_TYPES, GZipMiddleware
 from starlette.types import Scope
 
 from . import __version__
+from .blender import BlenderError, find_blender, open_in_blender
 from .config import Settings, get_settings
-from .exporters import FORMATS, export_glb, export_mesh
+from .downloads import ExportManager
+from .exporters import FORMATS, ExportError, export_glb, write_export
 from .pipeline import PrintSettings
 from .pipeline.colors import carry
 from .pipeline.process import to_z_up
 from .providers import GenParams, ProviderError, all_providers, get_provider
 from .providers.base import as_single_mesh
+from .providers.idol_local import IdolRunner
+from .providers.meshy import relief_options
 from .service import JobManager, finalize, public_model
 from .storage import DraftStore, ModelStore
 
 log = logging.getLogger("forma")
-# A model kept at full resolution (up to 5M triangles, see pipeline.process.MAX_FACES)
-# comes back from the editor as a binary STL of up to ~240 MB.
-MAX_UPLOAD = 256 * 1024 * 1024
+# A model kept at full resolution (up to 10M triangles, see pipeline.process.MAX_FACES)
+# comes back from the editor as a binary STL of up to ~477 MB.
+MAX_UPLOAD = 512 * 1024 * 1024
 MESH_TYPES = {"stl", "obj", "ply", "glb", "gltf", "off", "3mf"}
 
 # Cache-Control for files whose name changes with their content (the frontend's build output).
@@ -93,7 +99,7 @@ def _print_settings(raw: str | None) -> PrintSettings:
 async def _read_upload(upload: UploadFile) -> bytes:
     data = await upload.read(MAX_UPLOAD + 1)
     if len(data) > MAX_UPLOAD:
-        raise HTTPException(413, "File troppo grande (max 256 MB)")
+        raise HTTPException(413, "File troppo grande (max 512 MB)")
     if not data:
         raise HTTPException(422, "File vuoto")
     return data
@@ -104,6 +110,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     store = ModelStore(settings.data_dir)
     drafts = DraftStore(settings.data_dir)
     jobs = JobManager(store, settings.max_workers)
+    exports = ExportManager(store, settings.data_dir)
 
     app = FastAPI(title="Forma API", version=__version__)
     app.state.store = store
@@ -126,14 +133,66 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def health() -> dict[str, Any]:
         return {"ok": True, "version": __version__}
 
+    def _image_routes() -> list[tuple[str, str]]:
+        """The models an uploaded picture may go to (IMAGE_TO_3D), the default first;
+        "provider:*" stands for every model of that provider, in its own order."""
+        routes: list[tuple[str, str]] = []
+        for part in settings.image_to_3d.split(","):
+            name, _, model = (x.strip() for x in part.strip().partition(":"))
+            if not name:
+                continue
+            if model == "*":
+                try:
+                    keys = [m.key for m in get_provider(name).models()]
+                except ProviderError:
+                    keys = []
+            else:
+                keys = [model]
+            routes += [(name, k) for k in keys if (name, k) not in routes]
+        return routes or [("local", "idol")]
+
+    def _route_info(name: str, model: str) -> dict[str, Any]:
+        info: dict[str, Any] = {"description": "", "license": "", "eu_restricted": False, "notes": []}
+        try:
+            prov = get_provider(name)
+            ok, reason = prov.available()
+            found = next((m for m in prov.models() if m.key == model), None)
+            label = found.label if found else prov.label
+            if found:
+                info = {k: v for k, v in found.to_dict().items()
+                        if k in ("description", "license", "eu_restricted", "notes")}
+        except ProviderError as exc:
+            ok, reason, label = False, str(exc), name
+        if ok and model == "idol" and not IdolRunner.installed():
+            ok, reason = False, "Idol non è installato: esegui `make install-idol`."
+        return {"provider": name, "model": model, "label": label, "available": ok, "reason": reason,
+                **info}
+
+    def _image_provider(provider: str, model: str):
+        """The model an uploaded picture goes to: the one asked for when IMAGE_TO_3D allows it,
+        the default otherwise; a 409 saying why when it cannot run. Never another one."""
+        routes = _image_routes()
+        name, key = (provider, model) if (provider, model) in routes else routes[0]
+        info = _route_info(name, key)
+        if not info["available"]:
+            where = "Idol, sulla GPU NVIDIA di questo computer," if key == "idol" else info["label"]
+            raise HTTPException(409, f"{where} non è disponibile: {info['reason']}")
+        return get_provider(name), key
+
     @app.get("/api/providers")
     def providers() -> dict[str, Any]:
+        routes = [_route_info(*r) for r in _image_routes()]
         return {
             "default": settings.gen_provider,
             "hf_token": bool(settings.hf_token),
             "providers": [p.info() for p in all_providers()],
+            # the models an uploaded picture may go to, the default first
+            "image_routes": routes,
+            "image_to_3d": routes[0],
             "formats": list(FORMATS),
             "defaults": PrintSettings().to_dict(),
+            # "Apri in Blender": a Blender on this computer to open the model in, colours on
+            "blender": find_blender(settings) is not None,
         }
 
     def _provider(name: str):
@@ -184,8 +243,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         quality: str = Form("standard"),
         settings_json: str = Form("", alias="settings"),
         draft: str = Form(""),
+        image_kind: str = Form(""),
+        refine: str = Form(""),
+        relief: str = Form(""),
         image: UploadFile | None = File(None),
     ) -> dict[str, Any]:
+        """``image_kind`` of an uploaded picture: "real" (a photo, the default) or "synthetic"
+        (a render or a generated picture). Idol frames the object differently for each.
+        ``refine`` = "hi3d": Idol's shape is then refined by Hi3D on its Hugging Face Space.
+        ``relief`` (JSON): a bas-relief of the uploaded photo by Meshy, with these options (style,
+        carving, depth, base, bend); its size is the print's longest side."""
         prompt = prompt.strip()[:600]
         pil: Image.Image | None = None
         source = "upload"
@@ -207,13 +274,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(422, "Immagine non riconosciuta (usa PNG, JPG o WEBP)") from exc
             if max(pil.size) > 2048:
                 pil.thumbnail((2048, 2048))
+        if relief and (pil is None or source != "upload"):
+            raise HTTPException(422, "Carica la foto da cui fare il rilievo")
         if not prompt and pil is None:
             raise HTTPException(422, "Scrivi un prompt o carica un'immagine")
-        prov = _provider(provider)
         if quality not in ("draft", "standard", "high"):
             quality = "standard"
         print_settings = _print_settings(settings_json)
-        params = GenParams(model=model or None, seed=seed, quality=quality)
+        extra: dict[str, Any] = {}
+        if relief:
+            # A bas-relief: only Meshy makes it, only from a photo the user brings.
+            if pil is None or source != "upload":
+                raise HTTPException(422, "Carica la foto da cui fare il rilievo")
+            try:
+                extra["relief"] = relief_options(_parse_json(relief, "relief"),
+                                                 print_settings.target_size_mm, quality)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+            prov, model = _provider("meshy"), "relief"
+            print_settings.orientation = "keep"  # it comes lying on its back, face up
+        elif pil is not None and source == "upload":
+            # A picture the user brings goes only to a model IMAGE_TO_3D allows (Idol on this
+            # GPU or TRELLIS.2 on its Space), and to that one alone: no fallback.
+            prov, model = _image_provider(provider, model)
+        else:
+            prov = _provider(provider)
+        if pil is not None:  # an approved preview was made by FLUX: never a photo
+            extra["image_kind"] = ("synthetic" if source == "draft"
+                                   else image_kind if image_kind in ("real", "synthetic") else "real")
+        if refine == "hi3d":
+            extra["refine"] = "hi3d"
+        if pil is not None and source == "upload":
+            extra["no_fallback"] = True
+        params = GenParams(model=model or None, seed=seed, quality=quality, extra=extra)
         job = jobs.submit(prompt or None, pil, prov.name, params, print_settings, source=source)
         return {"job_id": job.id, "job": job.to_dict()}
 
@@ -291,23 +384,86 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         result = await run_in_threadpool(finalize, store, model_id, source, print_settings, meta)
         return public_model(result)
 
-    @app.get("/api/export/{model_id}")
-    def export(model_id: str, format: str = Query("stl")) -> Response:
-        fmt = format.lower()
+    def _export_format(raw: str) -> str:
+        fmt = raw.lower()
         if fmt not in FORMATS:
-            raise HTTPException(422, f"Formato non supportato: {format}")
+            raise HTTPException(422, f"Formato non supportato: {raw}")
+        return fmt
+
+    def _export_name(model_id: str, fmt: str) -> str:
+        """What the file is and how big: "pedone-degli-scacchi-100mm.3mf"."""
         try:
-            mesh = store.load_processed(model_id)
             meta = store.read_meta(model_id)
         except KeyError as exc:
             raise HTTPException(404, "Modello non trovato") from exc
-        data, mime, ext = export_mesh(mesh, fmt)
-        stem = _slug(meta.get("title") or meta.get("prompt") or "forma") + f"-{int(mesh.extents.max())}mm"
-        return Response(
-            data,
-            media_type=mime,
-            headers={"Content-Disposition": f'attachment; filename="{stem}.{ext}"'},
-        )
+        size = max((meta.get("report") or {}).get("bbox_mm") or [0])
+        stem = _slug(meta.get("title") or meta.get("prompt") or "forma") + f"-{int(size)}mm"
+        return f"{stem}.{FORMATS[fmt][1]}"
+
+    @app.post("/api/models/{model_id}/export")
+    def start_export(model_id: str, format: str = Query("3mf")) -> dict[str, Any]:
+        """Write the model in a format as a job: poll /api/exports/{id}, then fetch its file."""
+        fmt = _export_format(format)
+        name = _export_name(model_id, fmt)
+        return exports.start(model_id, fmt, name).to_dict()
+
+    @app.get("/api/exports/{export_id}")
+    async def export_status(export_id: str) -> dict[str, Any]:
+        job = exports.get(export_id)
+        if job is None:
+            raise HTTPException(404, "Esportazione non trovata")
+        return job.to_dict()
+
+    @app.get("/api/exports/{export_id}/file")
+    def export_file(export_id: str) -> FileResponse:
+        """The checked file, with its length; deleted once sent."""
+        job = exports.get(export_id)
+        if job is None:
+            raise HTTPException(404, "Esportazione non trovata")
+        if job.status != "ready" or job.path is None or not job.path.is_file():
+            raise HTTPException(409, job.error or "Il file non è ancora pronto")
+        return FileResponse(job.path, media_type=FORMATS[job.fmt][0], filename=job.filename,
+                            headers={"Cache-Control": "no-store"},
+                            background=BackgroundTask(exports.finish, export_id))
+
+    @app.delete("/api/exports/{export_id}")
+    def cancel_export(export_id: str) -> dict[str, Any]:
+        exports.cancel(export_id)
+        return {"ok": True}
+
+    @app.get("/api/export/{model_id}")
+    def export(model_id: str, format: str = Query("stl")) -> FileResponse:
+        """The same written and checked file in one request (no progress): direct links."""
+        fmt = _export_format(format)
+        name = _export_name(model_id, fmt)
+        try:
+            mesh = store.load_processed(model_id)
+        except KeyError as exc:
+            raise HTTPException(404, "Modello non trovato") from exc
+        path = exports.dir / f"direct-{uuid.uuid4().hex[:12]}.{FORMATS[fmt][1]}"
+        try:
+            write_export(mesh, fmt, path)
+        except ExportError as exc:
+            raise HTTPException(500, str(exc)) from exc
+        return FileResponse(path, media_type=FORMATS[fmt][0], filename=name,
+                            headers={"Cache-Control": "no-store"},
+                            background=BackgroundTask(path.unlink, missing_ok=True))
+
+    @app.post("/api/models/{model_id}/blender")
+    async def model_in_blender(model_id: str) -> dict[str, Any]:
+        """Open the model in Blender on this computer: the GLB, colours showing, framed."""
+        name = _export_name(model_id, "glb")
+        try:
+            mesh = await run_in_threadpool(store.load_processed, model_id)
+        except KeyError as exc:
+            raise HTTPException(404, "Modello non trovato") from exc
+        try:
+            path = await run_in_threadpool(open_in_blender, mesh, name, settings)
+        except BlenderError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except ExportError as exc:
+            raise HTTPException(500, str(exc)) from exc
+        return {"ok": True, "file": path.name}
 
     @app.get("/api/models")
     def list_models(limit: int = 60) -> dict[str, Any]:
